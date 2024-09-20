@@ -19,7 +19,11 @@ Devvit.addSettings([
     name: 'automatic_mode',
     label: 'Enable Automatic Summarization:',
     defaultValue: true,
-    scope: SettingScope.App,
+    onValidate: async (event: SettingsFormFieldValidatorEvent<boolean>, context: Devvit.Context) => {
+      if (event.value) {
+        return 'Automatic summarization is enabled. Manual summarization is disabled.';
+      }
+    },
   },
   {
     type: 'string',
@@ -226,8 +230,10 @@ const aiSummaryForm = Devvit.createForm(
     acceptLabel: 'Generate Summary',
   },
   async (event, context) => {
+    console.log('AI Summary form submitted');
     const apiKey = event.values.api_key.trim();
     if (!apiKey) {
+      console.error('API Key is empty');
       context.ui.showToast('API Key is required.');
       return;
     }
@@ -237,14 +243,18 @@ const aiSummaryForm = Devvit.createForm(
       console.info(`Manual summarization initiated for post ID: ${postId}`);
       const post = await context.reddit.getPostById(postId as string);
       if (!post) {
+        console.error('Post not found');
         context.ui.showToast('Post not found.');
         return;
       }
 
       const { title, content } = await fetchArticleContent(post.url);
+      console.log('Article content fetched');
       const summary = await summarizeContent(title, content, context, apiKey);
+      console.log('Summary generated');
       
       await context.reddit.submitComment({ id: postId!, text: summary });
+      console.log('Summary comment submitted');
       context.ui.showToast('AI summary created successfully!');
     } catch (error) {
       console.error('Error creating AI summary:', error);
@@ -258,18 +268,38 @@ Devvit.addMenuItem({
   label: 'Create an AI Summary',
   location: 'post',
   onPress: async (event, context) => {
-    const settings = await context.settings?.getAll();
-    if (settings?.automatic_mode) {
-      context.ui.showToast('Automatic summarization is enabled. Manual summarization is disabled.');
-      return;
-    }
+    console.log('AI Summary menu item pressed');
+    try {
+      const settings = await context.settings?.getAll();
+      console.log('Settings retrieved:', settings);
 
-    if (!context.postId) {
-      context.ui.showToast('Unable to identify the post. Please try again.');
-      return;
-    }
+      if (settings?.automatic_mode) {
+        console.log('Automatic mode is enabled');
+        context.ui.showToast('Automatic summarization is enabled. Manual summarization is disabled.');
+        return;
+      }
 
-    context.ui.showForm(aiSummaryForm, { postId: context.postId });
+      if (!context.postId) {
+        console.error('Unable to identify the post');
+        context.ui.showToast('Unable to identify the post. Please try again.');
+        return;
+      }
+
+      const post = await context.reddit.getPostById(context.postId);
+      console.log('Post retrieved:', post);
+
+      if (!post || !post.url || post.url === `https://www.reddit.com${post.permalink}`) {
+        console.error('Invalid post URL');
+        context.ui.showToast('This post does not have a valid URL to summarize.');
+        return;
+      }
+
+      console.log('Showing AI summary form');
+      context.ui.showForm(aiSummaryForm, { postId: context.postId });
+    } catch (error) {
+      console.error('Error in AI Summary menu item:', error);
+      context.ui.showToast('An error occurred while processing your request. Please try again.');
+    }
   },
 });
 
