@@ -26,6 +26,7 @@ export class TokenBucket {
   }
 
   private async refill(context: PartialContext): Promise<void> {
+    console.debug('Refilling tokens...');
     const now = Date.now();
     const lastRefill = parseInt(await context.redis?.get(TokenBucket.LAST_REFILL_KEY) || '0');
     const timePassed = (now - lastRefill) / 1000; // in seconds
@@ -33,23 +34,29 @@ export class TokenBucket {
     const currentTokens = parseFloat(await context.redis?.get(TokenBucket.TOKENS_KEY) || '0');
     const updatedTokens = Math.min(currentTokens + newTokens, this.tokensPerMinute);
     
+    console.debug(`Adding ${newTokens.toFixed(2)} tokens. Total tokens now: ${updatedTokens.toFixed(2)}`);
     await context.redis?.set(TokenBucket.TOKENS_KEY, updatedTokens.toString());
     await context.redis?.set(TokenBucket.LAST_REFILL_KEY, now.toString());
   }
 
   async waitForTokens(tokens: number, context: PartialContext): Promise<void> {
+    console.debug(`Waiting for ${tokens} tokens...`);
     while (true) {
       await this.refill(context);
       const currentTokens = parseFloat(await context.redis?.get(TokenBucket.TOKENS_KEY) || '0');
+      console.debug(`Current tokens available: ${currentTokens}`);
       if (currentTokens >= tokens) {
         await context.redis?.set(TokenBucket.TOKENS_KEY, (currentTokens - tokens).toString());
+        console.debug(`Allocated ${tokens} tokens. Tokens left: ${currentTokens - tokens}`);
         break;
       }
+      console.debug('Not enough tokens. Waiting...');
       await new Promise(resolve => setTimeout(resolve, 100));
     }
   }
 
   async waitForRequest(context: PartialContext): Promise<void> {
+    console.debug('Waiting for available request slot...');
     while (true) {
       const now = Date.now();
       const lastRequest = parseInt(await context.redis?.get(TokenBucket.LAST_REQUEST_KEY) || '0');
@@ -59,17 +66,25 @@ export class TokenBucket {
         if (requestsToday < this.requestsPerDay) {
           await context.redis?.set(TokenBucket.REQUESTS_TODAY_KEY, (requestsToday + 1).toString());
           await context.redis?.set(TokenBucket.LAST_REQUEST_KEY, now.toString());
+          console.debug(`Allocated request slot. Requests today: ${requestsToday + 1}`);
           break;
+        } else {
+          console.warn('Daily request limit reached.');
         }
+      } else {
+        console.debug('Request slot not available yet.');
       }
       await new Promise(resolve => setTimeout(resolve, 100));
     }
   }
 
   async resetDailyRequests(context: PartialContext): Promise<void> {
+    console.info('Resetting daily requests and tokens...');
     await context.redis?.set(TokenBucket.REQUESTS_TODAY_KEY, '0');
+    console.debug('Daily requests reset to 0.');
     // Optionally reset tokens as well
     await context.redis?.set(TokenBucket.TOKENS_KEY, this.tokensPerMinute.toString());
+    console.debug(`Tokens reset to ${this.tokensPerMinute}.`);
   }
 }
 
