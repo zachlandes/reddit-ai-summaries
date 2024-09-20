@@ -1,8 +1,9 @@
-import { Devvit, SettingScope, Context } from '@devvit/public-api';
+import { Devvit, SettingScope, Context, SettingsFormFieldValidatorEvent } from '@devvit/public-api';
 import { tokenBucket } from './utils/tokenBucket.js';
 import { summarizeContent } from './utils/summaryUtils.js';
 import { DEFAULT_GEMINI_LIMITS } from './config/geminiLimits.js';
 import { processQueue, cleanupQueue } from './utils/queueProcessor.js';
+import { fetchArticleContent } from './utils/scrapeUtils.js';
 
 // Define a type for partial context
 type PartialContext = Partial<Context>;
@@ -14,13 +15,22 @@ Devvit.configure({
 
 Devvit.addSettings([
   {
+    type: 'boolean',
+    name: 'automatic_mode',
+    label: 'Enable Automatic Summarization:',
+    defaultValue: true,
+    scope: SettingScope.App,
+  },
+  {
     type: 'string',
     name: 'api_key',
     label: 'Enter your Gemini API Key:',
-    onValidate: async ({ value }) => {
-      if (!value || value.trim() === '') {
-        return 'API Key cannot be empty';
+    onValidate: async (event: SettingsFormFieldValidatorEvent<string>, context: Devvit.Context) => {
+      const automaticMode = await context.settings.get('automatic_mode');
+      if (automaticMode && (!event.value || event.value.trim() === '')) {
+        return 'API Key is required when Automatic Summarization is enabled.';
       }
+      return undefined;
     },
   },
   {
@@ -58,14 +68,6 @@ Devvit.addSettings([
   },
 ]);
 
-Devvit.addSchedulerJob({
-  name: 'reset_daily_requests',
-  onRun: async (event, context: PartialContext) => {
-    console.info('Running reset_daily_requests job...');
-    await tokenBucket.resetDailyRequests(context);
-  },
-});
-
 // Add new scheduler jobs for queue processing and cleanup
 Devvit.addSchedulerJob({
   name: 'process_queue',
@@ -89,49 +91,185 @@ Devvit.addTrigger({
   onEvent: async (event, context: PartialContext) => {
     const settings = await context.settings?.getAll();
     tokenBucket.updateLimits(
-      settings?.tokensPerMinute as number,
-      settings?.requestsPerMinute as number,
-      settings?.requestsPerDay as number
+      settings?.tokens_per_minute as number,
+      settings?.requests_per_minute as number,
+      settings?.requests_per_day as number
     );
 
-    // Schedule the scheduler jobs
+    if (settings?.automatic_mode) {
+      // Schedule the scheduler jobs
+      try {
+        console.info('Scheduling reset_daily_requests job...');
+        const resetJobId = await context.scheduler?.runJob({
+          cron: '0 0 * * *', // Run daily at midnight
+          name: 'reset_daily_requests',
+          data: {},
+        });
+        if (resetJobId) {
+          console.debug(`reset_daily_requests job scheduled with ID: ${resetJobId}`);
+          await context.redis?.set('resetDailyRequestsJobId', resetJobId);
+        }
+
+        console.info('Scheduling process_queue job...');
+        const processQueueJobId = await context.scheduler?.runJob({
+          cron: '*/30 * * * * *', // Run every 30 seconds
+          name: 'process_queue',
+          data: {},
+        });
+        if (processQueueJobId) {
+          console.debug(`process_queue job scheduled with ID: ${processQueueJobId}`);
+          await context.redis?.set('processQueueJobId', processQueueJobId);
+        }
+
+        console.info('Scheduling cleanup_queue job...');
+        const cleanupQueueJobId = await context.scheduler?.runJob({
+          cron: '0 * * * *', // Run hourly
+          name: 'cleanup_queue',
+          data: {},
+        });
+        if (cleanupQueueJobId) {
+          console.debug(`cleanup_queue job scheduled with ID: ${cleanupQueueJobId}`);
+          await context.redis?.set('cleanupQueueJobId', cleanupQueueJobId);
+        }
+      } catch (e) {
+        console.error('Error scheduling jobs:', e);
+        throw e;
+      }
+    } else {
+      console.info('Automatic summarization is disabled.');
+    }
+  },
+});
+
+// Handle AppUpdate similarly
+Devvit.addTrigger({
+  event: 'AppUpgrade',
+  onEvent: async (event, context: PartialContext) => {
+    const settings = await context.settings?.getAll();
+    tokenBucket.updateLimits(
+      settings?.tokens_per_minute as number,
+      settings?.requests_per_minute as number,
+      settings?.requests_per_day as number
+    );
+
+    // Remove existing jobs
     try {
-      console.info('Scheduling reset_daily_requests job...');
-      const resetJobId = await context.scheduler?.runJob({
-        cron: '0 0 * * *', // Run daily at midnight
-        name: 'reset_daily_requests',
-        data: {},
-      });
+      const resetJobId = await context.redis?.get('resetDailyRequestsJobId');
+      const processQueueJobId = await context.redis?.get('processQueueJobId');
+      const cleanupQueueJobId = await context.redis?.get('cleanupQueueJobId');
+
       if (resetJobId) {
-        console.debug(`reset_daily_requests job scheduled with ID: ${resetJobId}`);
-        await context.redis?.set('resetDailyRequestsJobId', resetJobId);
+        await context.scheduler?.cancelJob(resetJobId);
+        console.debug(`Removed reset_daily_requests job with ID: ${resetJobId}`);
       }
-
-      console.info('Scheduling process_queue job...');
-      const processQueueJobId = await context.scheduler?.runJob({
-        cron: '*/30 * * * * *', // Run every 30 seconds
-        name: 'process_queue',
-        data: {},
-      });
       if (processQueueJobId) {
-        console.debug(`process_queue job scheduled with ID: ${processQueueJobId}`);
-        await context.redis?.set('processQueueJobId', processQueueJobId);
+        await context.scheduler?.cancelJob(processQueueJobId);
+        console.debug(`Removed process_queue job with ID: ${processQueueJobId}`);
+      }
+      if (cleanupQueueJobId) {
+        await context.scheduler?.cancelJob(cleanupQueueJobId);
+        console.debug(`Removed cleanup_queue job with ID: ${cleanupQueueJobId}`);
       }
 
-      console.info('Scheduling cleanup_queue job...');
-      const cleanupQueueJobId = await context.scheduler?.runJob({
-        cron: '0 * * * *', // Run hourly
-        name: 'cleanup_queue',
-        data: {},
-      });
-      if (cleanupQueueJobId) {
-        console.debug(`cleanup_queue job scheduled with ID: ${cleanupQueueJobId}`);
-        await context.redis?.set('cleanupQueueJobId', cleanupQueueJobId);
+      // Reschedule if automatic_mode is enabled
+      if (settings?.automatic_mode) {
+        console.info('Rescheduling jobs due to AppUpdate...');
+        const newResetJobId = await context.scheduler?.runJob({
+          cron: '0 0 * * *',
+          name: 'reset_daily_requests',
+          data: {},
+        });
+        if (newResetJobId) {
+          console.debug(`reset_daily_requests job rescheduled with ID: ${newResetJobId}`);
+          await context.redis?.set('resetDailyRequestsJobId', newResetJobId);
+        }
+
+        const newProcessQueueJobId = await context.scheduler?.runJob({
+          cron: '*/30 * * * * *',
+          name: 'process_queue',
+          data: {},
+        });
+        if (newProcessQueueJobId) {
+          console.debug(`process_queue job rescheduled with ID: ${newProcessQueueJobId}`);
+          await context.redis?.set('processQueueJobId', newProcessQueueJobId);
+        }
+
+        const newCleanupQueueJobId = await context.scheduler?.runJob({
+          cron: '0 * * * *',
+          name: 'cleanup_queue',
+          data: {},
+        });
+        if (newCleanupQueueJobId) {
+          console.debug(`cleanup_queue job rescheduled with ID: ${newCleanupQueueJobId}`);
+          await context.redis?.set('cleanupQueueJobId', newCleanupQueueJobId);
+        }
       }
     } catch (e) {
-      console.error('Error scheduling jobs:', e);
+      console.error('Error rescheduling jobs:', e);
       throw e;
     }
+  },
+});
+
+// Define the form outside of the menu item
+const aiSummaryForm = Devvit.createForm(
+  {
+    fields: [
+      {
+        name: 'api_key',
+        label: 'Gemini API Key',
+        type: 'string',
+        required: true,
+      },
+    ],
+    title: 'Create AI Summary',
+    acceptLabel: 'Generate Summary',
+  },
+  async (event, context) => {
+    const apiKey = event.values.api_key.trim();
+    if (!apiKey) {
+      context.ui.showToast('API Key is required.');
+      return;
+    }
+
+    const postId = context.postId;
+    try {
+      console.info(`Manual summarization initiated for post ID: ${postId}`);
+      const post = await context.reddit.getPostById(postId as string);
+      if (!post) {
+        context.ui.showToast('Post not found.');
+        return;
+      }
+
+      const { title, content } = await fetchArticleContent(post.url);
+      const summary = await summarizeContent(title, content, context, apiKey);
+      
+      await context.reddit.submitComment({ id: postId!, text: summary });
+      context.ui.showToast('AI summary created successfully!');
+    } catch (error) {
+      console.error('Error creating AI summary:', error);
+      context.ui.showToast('Failed to create AI summary.');
+    }
+  }
+);
+
+// Update the menu item to use the created form
+Devvit.addMenuItem({
+  label: 'Create an AI Summary',
+  location: 'post',
+  onPress: async (event, context) => {
+    const settings = await context.settings?.getAll();
+    if (settings?.automatic_mode) {
+      context.ui.showToast('Automatic summarization is enabled. Manual summarization is disabled.');
+      return;
+    }
+
+    if (!context.postId) {
+      context.ui.showToast('Unable to identify the post. Please try again.');
+      return;
+    }
+
+    context.ui.showForm(aiSummaryForm, { postId: context.postId });
   },
 });
 

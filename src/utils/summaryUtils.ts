@@ -4,7 +4,12 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 
 type PartialContext = Partial<Context>;
 
-export async function summarizeContent(title: string, content: string, context: PartialContext): Promise<string> {
+export async function summarizeContent(
+  title: string,
+  content: string,
+  context: PartialContext,
+  apiKey?: string
+): Promise<string> {
   console.info('Starting summary generation...');
   // Wait for available request slot
   console.debug('Waiting for available request slot...');
@@ -18,23 +23,27 @@ export async function summarizeContent(title: string, content: string, context: 
   console.debug('Waiting for available tokens...');
   await tokenBucket.waitForTokens(estimatedTokens, context);
 
+  // Ensure API key is provided
+  if (!apiKey) {
+    console.error('API key is required for summary generation.');
+    throw new Error('API key is required for summary generation.');
+  }
+
   // Generate the summary using Gemini
   console.debug('Generating summary with Gemini API...');
-  const summary = await generateSummaryWithGemini(title, content, context);
+  const summary = await generateSummaryWithGemini(title, content, apiKey);
   console.info('Summary generation completed.');
   
   return summary;
 }
 
-async function generateSummaryWithGemini(title: string, content: string, context: PartialContext): Promise<string> {
+async function generateSummaryWithGemini(
+  title: string,
+  content: string,
+  apiKey: string
+): Promise<string> {
   console.debug('Calling Gemini API for summary generation...');
   try {
-    const apiKey = await context.settings?.get('api_key');
-    if (!apiKey || typeof apiKey !== 'string') {
-      console.error('Invalid or missing API key.');
-      throw new Error('Invalid or missing API key');
-    }
-
     const model = new GoogleGenerativeAI(apiKey);
     const geminiModel = model.getGenerativeModel({ model: "gemini-1.5-flash" });
 

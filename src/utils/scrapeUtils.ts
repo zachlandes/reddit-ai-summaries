@@ -12,7 +12,7 @@ export async function fetchArticleContent(url: string): Promise<{ title: string;
         const response = await fetch(url, {
             method: 'GET',
             headers: {
-                'User-Agent': 'Devvit AI Summaries App (https://developers.reddit.com/)', //TODO: Update this link with app's directory page
+                'User-Agent': 'Devvit AI Summaries App (https://developers.reddit.com/)', // TODO: Update this link with app's directory page
                 'Accept': 'text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.8',
                 'Accept-Language': 'en-US,en;q=0.5',
             }
