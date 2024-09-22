@@ -1,145 +1,176 @@
 import { Context } from '@devvit/public-api';
 import { fetchArticleContent, submitToArchive, getUniqueToken } from './scrapeUtils.js';
 import { summarizeContent } from './summaryUtils.js';
+import { CONSTANTS } from '../config/constants.js';
 
-// Define PartialContext type
 type PartialContext = Partial<Context>;
 
-const MAX_RETRIES = 2; // Maximum number of retries before removing from queue
-const RETRY_INTERVAL = 300000; // 5 minutes in milliseconds
-
 export async function processQueue(context: PartialContext): Promise<void> {
-	console.info('Starting to process the queue...');
-	const now = Date.now();
+    console.info('Starting to process the queue...');
+    const now = Date.now();
 
-	// Fetch up to 10 post IDs to process, sorted by score (timestamp)
-	const postIds = await context.redis?.zRange('post_queue', 0, now, { by: 'score' });
+    const apiKey = await context.settings?.get('api_key') as string;
+    if (!apiKey) {
+        console.error('API key is not set. Pausing queue processing.');
+        return;
+    }
 
-	console.debug(`Fetched post IDs from queue: ${postIds}`);
+    const postIds = await context.redis?.zRange('post_queue', 0, now, { by: 'score' });
 
-	if (!postIds || postIds.length === 0) {
-		console.warn('No posts found in the queue to process.');
-		return;
-	}
+    console.debug(`Fetched post IDs from queue: ${postIds}`);
 
-	// Get or refresh the token before processing
-	let token;
-	try {
-		token = await getUniqueToken(context);
-	} catch (error) {
-		console.error('Failed to obtain archive.is token:', error);
-		return;
-	}
+    if (!postIds || postIds.length === 0) {
+        console.warn('No posts found in the queue to process.');
+        return;
+    }
 
-	// Process only the first 10 items
-	for (const postId of postIds.slice(0, 10)) {
-		console.info(`Processing post ID: ${postId.member}`);
-		try {
-			// Fetch post details
-			const post = await context.reddit?.getPostById(postId.member);
-			if (!post) {
-				console.warn(`Post ID ${postId.member} not found.`);
-				await context.redis?.zRem('post_queue', [postId.member]);
-				continue;
-			}
-			const url = post.url;
-			console.debug(`Fetched URL for post ID ${postId.member}: ${url}`);
+    let token;
+    try {
+        token = await getUniqueToken(context);
+    } catch (error) {
+        console.error('Failed to obtain archive.is token:', error);
+        return;
+    }
 
-			// Get the current retry count
-			const retryCount = await context.redis?.hGet(`retry:${postId.member}`, 'count') || '0';
-			const currentRetryCount = parseInt(retryCount, 10);
+    for (const postId of postIds.slice(0, 10)) {
+        console.info(`Processing post ID: ${postId.member}`);
+        try {
+            const post = await context.reddit?.getPostById(postId.member);
+            if (!post) {
+                console.warn(`Post ID ${postId.member} not found.`);
+                await context.redis?.zRem('post_queue', [postId.member]);
+                continue;
+            }
+            const url = post.url;
+            console.debug(`Fetched URL for post ID ${postId.member}: ${url}`);
 
-			// Scrape content
-			console.debug(`Fetching article content from URL: ${url}`);
-			let { title, content, isArchived, archiveUrl } = await fetchArticleContent(url, token, context);
+            const retryCount = await context.redis?.hGet(`retry:${postId.member}`, 'count') || '0';
+            const currentRetryCount = parseInt(retryCount, 10);
 
-			if (!isArchived) {
-				await submitToArchive(url, token);
-				if (currentRetryCount >= MAX_RETRIES) {
-					console.warn(`Max retries reached for post ID ${postId.member}. Removing from queue.`);
-					await context.redis?.zRem('post_queue', [postId.member]);
-					await context.redis?.del(`retry:${postId.member}`);
-				} else {
-					console.debug(`Content not yet archived for post ID ${postId.member}. Will retry later.`);
-					// Update the score to retry after 5 minutes
-					await context.redis?.zAdd('post_queue', { member: postId.member, score: now + RETRY_INTERVAL });
-					// Increment retry count
-					await context.redis?.hSet(`retry:${postId.member}`, { count: (currentRetryCount + 1).toString() });
-				}
-				continue;
-			}
+            console.debug(`Fetching article content from URL: ${url}`);
+            let { title, content, isArchived, archiveUrl } = await fetchArticleContent(url, token, context);
 
-			console.debug(`Fetched content for post ID ${postId.member}`);
+            if (!isArchived) {
+                await submitToArchive(url, token);
+                if (currentRetryCount >= CONSTANTS.MAX_RETRIES) {
+                    console.warn(`Max retries reached for post ID ${postId.member}. Removing from queue.`);
+                    await context.redis?.zRem('post_queue', [postId.member]);
+                    await context.redis?.del(`retry:${postId.member}`);
+                } else {
+                    console.debug(`Content not yet archived for post ID ${postId.member}. Will retry later.`);
+                    await context.redis?.zAdd('post_queue', { member: postId.member, score: now + CONSTANTS.RETRY_INTERVAL });
+                    await context.redis?.hSet(`retry:${postId.member}`, { count: (currentRetryCount + 1).toString() });
+                }
+                continue;
+            }
 
-			// Generate summary
-			console.debug(`Generating summary for post ID ${postId.member}`);
-			const summary = await summarizeContent(title, content, context);
-			console.debug(`Summary generated for post ID ${postId.member}`);
+            console.debug(`Fetched content for post ID ${postId.member}`);
 
-			// Add archive link to the summary
-			const summaryWithArchiveLink = `${summary}\n\nArchived version: ${archiveUrl}`;
+            console.debug(`Generating summary for post ID ${postId.member}`);
+            try {
+                const summary = await summarizeContent(
+                    archiveUrl || post.url,
+                    title,
+                    content,
+                    context,
+                    apiKey,
+                    CONSTANTS.DEFAULT_TEMPERATURE
+                );
+                console.debug(`Summary generated for post ID ${postId.member}`);
 
-			// Post summary as a comment and then make it sticky
-			console.info(`Submitting summary comment for post ID ${postId.member}`);
-			const comment = await context.reddit?.submitComment({
-				id: postId.member,
-				text: summaryWithArchiveLink,
-			});
+                const summaryWithArchiveLink = `${summary}\n\nArchived version: ${archiveUrl}`;
 
-			if (comment) {
-				console.debug(`Making comment sticky for post ID ${postId.member}`);
-				await comment.distinguish(true);
-			} else {
-				console.warn(`Failed to submit comment for post ID ${postId.member}`);
-			}
+                console.info(`Submitting summary comment for post ID ${postId.member}`);
+                const comment = await context.reddit?.submitComment({
+                    id: postId.member,
+                    text: summaryWithArchiveLink,
+                });
 
-			// Remove from queue and clear retry count
-			console.debug(`Removing post ID ${postId.member} from the queue.`);
-			await context.redis?.zRem('post_queue', [postId.member]);
-			await context.redis?.del(`retry:${postId.member}`);
-			console.info(`Successfully processed post ID ${postId.member}`);
-		} catch (error) {
-			console.error(`Error processing post ${postId.member}:`, error);
+                if (comment) {
+                    console.debug(`Making comment sticky for post ID ${postId.member}`);
+                    await comment.distinguish(true);
+                } else {
+                    console.warn(`Failed to submit comment for post ID ${postId.member}`);
+                }
 
-			if (isResolvableError(error)) {
-				console.warn(`Resolvable error encountered for post ID ${postId.member}. Will retry later.`);
-				// Update the score to retry after 5 minutes
-				await context.redis?.zAdd('post_queue', { member: postId.member, score: now + RETRY_INTERVAL });
-			} else {
-				console.error(`Non-resolvable error encountered for post ID ${postId.member}. Removing from queue.`);
-				// Remove from queue despite the error
-				await context.redis?.zRem('post_queue', [postId.member]);
-			}
-		}
-	}
+                console.debug(`Removing post ID ${postId.member} from the queue.`);
+                await context.redis?.zRem('post_queue', [postId.member]);
+                await context.redis?.del(`retry:${postId.member}`);
+                console.info(`Successfully processed post ID ${postId.member}`);
+            } catch (summaryError) {
+                console.error(`Error generating summary for post ${postId.member}:`, summaryError);
+                await handleSummaryError(context, postId.member, summaryError, currentRetryCount, now);
+            }
+        } catch (error) {
+            console.error(`Error processing post ${postId.member}:`, error);
+            await handleProcessingError(context, postId.member, error, now);
+        }
+    }
 }
 
-export async function cleanupQueue(context: PartialContext): Promise<void> {
-	console.info('Starting cleanup of the queue...');
-	const now = Date.now();
-	const oneDayAgo = now - 86400000; // 24 hours in milliseconds
+async function handleSummaryError(
+    context: PartialContext, 
+    postId: string, 
+    error: any, 
+    currentRetryCount: number, 
+    now: number
+): Promise<void> {
+    if (isResolvableError(error)) {
+        if (currentRetryCount < CONSTANTS.MAX_RETRIES) {
+            console.warn(`Resolvable error encountered for post ID ${postId}. Will retry later.`);
+            await context.redis?.zAdd('post_queue', { member: postId, score: now + CONSTANTS.RETRY_INTERVAL });
+            await context.redis?.hSet(`retry:${postId}`, { count: (currentRetryCount + 1).toString() });
+        } else {
+            console.warn(`Max retries reached for post ID ${postId}. Removing from queue.`);
+            await context.redis?.zRem('post_queue', [postId]);
+            await context.redis?.del(`retry:${postId}`);
+        }
+    } else {
+        console.error(`Non-resolvable error encountered for post ID ${postId}. Removing from queue.`);
+        await context.redis?.zRem('post_queue', [postId]);
+        await context.redis?.del(`retry:${postId}`);
+    }
+}
 
-	// Fetch all items in the queue
-	const allItems = await context.redis?.zRange('post_queue', 0, -1, { by: 'score' });
-
-	if (allItems && allItems.length > 0) {
-		const itemsToRemove = allItems
-			.filter(item => item.score < oneDayAgo)
-			.map(item => item.member);
-
-		if (itemsToRemove.length > 0) {
-			const removed = await context.redis?.zRem('post_queue', itemsToRemove);
-			console.info(`Cleanup completed. Removed ${removed} old posts from the queue.`);
-		} else {
-			console.info('No old posts to remove from the queue.');
-		}
-	} else {
-		console.info('Queue is empty. No cleanup needed.');
-	}
+async function handleProcessingError(
+    context: PartialContext, 
+    postId: string, 
+    error: any, 
+    now: number
+): Promise<void> {
+    if (isResolvableError(error)) {
+        console.warn(`Resolvable error encountered for post ID ${postId}. Will retry later.`);
+        await context.redis?.zAdd('post_queue', { member: postId, score: now + CONSTANTS.RETRY_INTERVAL });
+    } else {
+        console.error(`Non-resolvable error encountered for post ID ${postId}. Removing from queue.`);
+        await context.redis?.zRem('post_queue', [postId]);
+    }
 }
 
 function isResolvableError(error: any): boolean {
-	// Define logic to determine if the error is resolvable
-	const resolvableErrors = ['TimeoutError', 'ServiceUnavailable'];
-	return resolvableErrors.includes(error.name);
+    const resolvableErrors = ['TimeoutError', 'ServiceUnavailable', 'RateLimitError'];
+    return resolvableErrors.includes(error.name) || error.message.includes('rate limit');
+}
+
+export async function cleanupQueue(context: PartialContext): Promise<void> {
+    console.info('Starting cleanup of the queue...');
+    const now = Date.now();
+    const oneDayAgo = now - 86400000; // 24 hours in milliseconds
+
+    const allItems = await context.redis?.zRange('post_queue', 0, -1, { by: 'score' });
+
+    if (allItems && allItems.length > 0) {
+        const itemsToRemove = allItems
+            .filter(item => item.score < oneDayAgo)
+            .map(item => item.member);
+
+        if (itemsToRemove.length > 0) {
+            const removed = await context.redis?.zRem('post_queue', itemsToRemove);
+            console.info(`Cleanup completed. Removed ${removed} old posts from the queue.`);
+        } else {
+            console.info('No old posts to remove from the queue.');
+        }
+    } else {
+        console.info('Queue is empty. No cleanup needed.');
+    }
 }

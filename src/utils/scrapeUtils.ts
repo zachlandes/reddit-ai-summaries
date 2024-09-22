@@ -1,5 +1,6 @@
 import * as cheerio from 'cheerio';
 import { Devvit, Context } from '@devvit/public-api';
+import { CONSTANTS } from '../config/constants.js';
 
 Devvit.configure({
     http: true,
@@ -9,15 +10,9 @@ export type PartialContext = Partial<Context>;
 
 let cachedToken: string | null = null;
 let tokenExpirationTime: number = 0;
-const TOKEN_VALIDITY_DURATION = 60 * 60 * 1000; // 1 hour in milliseconds
 
-/**
- * Checks if an archive exists for the given URL.
- * @param url The original URL to check.
- * @returns The archive URL if it exists, otherwise null.
- */
 async function checkArchiveExists(url: string): Promise<string | null> {
-    const archiveUrl = `https://archive.is/latest/${encodeURIComponent(url)}`;
+    const archiveUrl = `${CONSTANTS.ARCHIVE_IS_URL}latest/${encodeURIComponent(url)}`;
     console.debug(`Checking if archive exists for: ${archiveUrl}`);
     try {
         const response = await fetch(archiveUrl, {
@@ -34,18 +29,12 @@ async function checkArchiveExists(url: string): Promise<string | null> {
     return null;
 }
 
-/**
- * Retrieves a unique token, utilizing caching and Redis storage.
- * @param context The partial context containing necessary services.
- * @returns A promise that resolves to a unique token string.
- */
 export async function getUniqueToken(context: PartialContext): Promise<string> {
     const now = Date.now();
     if (cachedToken && now < tokenExpirationTime) {
         return cachedToken;
     }
 
-    // Fetch new token from Redis or archive.is
     const storedToken = await context.redis?.get('archive_token');
     const storedExpiration = await context.redis?.get('archive_token_expiration');
 
@@ -55,17 +44,15 @@ export async function getUniqueToken(context: PartialContext): Promise<string> {
         return cachedToken;
     }
 
-    // If no valid token in Redis, fetch from archive.is
     try {
-        const response = await fetch("http://archive.is/");
+        const response = await fetch(CONSTANTS.ARCHIVE_IS_URL);
         const html = await response.text();
         
         const submitidMatch = html.match(/name="submitid"\s+value="([^"]+)"/);
         if (submitidMatch && submitidMatch[1]) {
             cachedToken = submitidMatch[1];
-            tokenExpirationTime = now + TOKEN_VALIDITY_DURATION;
+            tokenExpirationTime = now + CONSTANTS.TOKEN_VALIDITY_DURATION;
             
-            // Store in Redis
             await context.redis?.set('archive_token', cachedToken);
             await context.redis?.set('archive_token_expiration', tokenExpirationTime.toString());
             
@@ -79,12 +66,6 @@ export async function getUniqueToken(context: PartialContext): Promise<string> {
     throw new Error("Failed to obtain unique token");
 }
 
-/**
- * Submits a URL to archive.is.
- * @param url The URL to archive.
- * @param submitToken The unique token required for submission.
- * @returns The archive URL.
- */
 export async function submitToArchive(url: string, submitToken: string): Promise<string> {
     console.debug(`Submitting URL to archive.is: ${url}`);
     
@@ -94,7 +75,7 @@ export async function submitToArchive(url: string, submitToken: string): Promise
     formData.append('submitid', submitToken);
 
     try {
-        const response = await fetch("https://archive.is/submit/", {
+        const response = await fetch(`${CONSTANTS.ARCHIVE_IS_URL}submit/`, {
             method: 'POST',
             body: formData,
             headers: {
@@ -112,7 +93,6 @@ export async function submitToArchive(url: string, submitToken: string): Promise
                 }
             }
             
-            // If we didn't get a Refresh header, try to extract from the body
             const html = await response.text();
             const archivedUrlMatch = html.match(/<meta property="og:url" content="([^"]+)"/);
             if (archivedUrlMatch && archivedUrlMatch[1]) {
@@ -127,13 +107,6 @@ export async function submitToArchive(url: string, submitToken: string): Promise
     }
 }
 
-/**
- * Fetches article content from the original or archived URL.
- * @param url The original URL of the article.
- * @param submitToken The unique token required for submission.
- * @param context The partial context containing necessary services.
- * @returns An object containing the title, content, archival status, and archive URL.
- */
 export async function fetchArticleContent(
     url: string,
     submitToken: string,
@@ -141,8 +114,7 @@ export async function fetchArticleContent(
 ): Promise<{ title: string; content: string; isArchived: boolean; archiveUrl: string | null }> {
     console.info(`Fetching article content from URL: ${url}`);
     
-    // Check if the URL is already an archive.is URL
-    if (url.startsWith('https://archive.is/') || url.startsWith('https://archive.ph/')) {
+    if (url.startsWith(CONSTANTS.ARCHIVE_IS_URL) || url.startsWith(CONSTANTS.ARCHIVE_PH_URL)) {
         console.debug(`URL is already an archive.is link: ${url}`);
         return await fetchFromArchive(url);
     }
@@ -187,26 +159,21 @@ async function fetchFromArchive(archiveUrl: string): Promise<{ title: string; co
         const html = await response.text();
         console.debug('Fetched HTML content successfully.');
       
-        // Load HTML into Cheerio
         const $ = cheerio.load(html);
         console.debug('Loaded HTML into Cheerio.');
       
-        // Extract title
         const title = $('title').text() || 'No title found';
         console.debug(`Extracted title: ${title}`);
     
-        // Extract main content
         let content = '';
         if ($('article').length) {
             content = $('article').text();
             console.debug('Extracted content from <article> tag.');
         } else {
-            // Fallback: Extract text from the body
             content = $('body').text();
             console.debug('Extracted content from <body> tag as fallback.');
         }
     
-        // Clean up the content
         content = content.replace(/\s+/g, ' ').trim();
         console.debug('Cleaned up the extracted content.');
     

@@ -4,13 +4,15 @@ import { summarizeContent } from './utils/summaryUtils.js';
 import { DEFAULT_GEMINI_LIMITS } from './config/geminiLimits.js';
 import { processQueue, cleanupQueue } from './utils/queueProcessor.js';
 import { fetchArticleContent, getUniqueToken } from './utils/scrapeUtils.js';
+import { validateApiKey } from './utils/apiUtils.js';
+import { CONSTANTS } from './config/constants.js';
 
-// Define a type for partial context
 type PartialContext = Partial<Context>;
 
 Devvit.configure({
   redis: true,
   redditAPI: true,
+  http: true,
 });
 
 Devvit.addSettings([
@@ -19,11 +21,6 @@ Devvit.addSettings([
     name: 'automatic_mode',
     label: 'Enable Automatic Summarization:',
     defaultValue: true,
-    onValidate: async (event: SettingsFormFieldValidatorEvent<boolean>, context: Devvit.Context) => {
-      if (event.value) {
-        return 'Automatic summarization is enabled. Manual summarization is disabled.';
-      }
-    },
   },
   {
     type: 'string',
@@ -34,13 +31,19 @@ Devvit.addSettings([
       if (automaticMode && (!event.value || event.value.trim() === '')) {
         return 'API Key is required when Automatic Summarization is enabled.';
       }
+      if (event.value && event.value.trim() !== '') {
+        const isValid = await validateApiKey(event.value.trim());
+        if (!isValid) {
+          return 'Invalid API Key. Please check and try again.';
+        }
+      }
       return undefined;
     },
   },
   {
     type: 'number',
     name: 'requests_per_minute',
-    label: 'Set Requests per Minute:',
+    label: 'Set Maximum Requests per Minute:',
     defaultValue: DEFAULT_GEMINI_LIMITS.REQUESTS_PER_MINUTE,
     onValidate: async ({ value }) => {
       if (typeof value !== 'number' || value < 1) {
@@ -51,7 +54,7 @@ Devvit.addSettings([
   {
     type: 'number',
     name: 'tokens_per_minute',
-    label: 'Set Tokens per Minute:',
+    label: 'Set Maximum Tokens per Minute:',
     defaultValue: DEFAULT_GEMINI_LIMITS.TOKENS_PER_MINUTE,
     onValidate: async ({ value }) => {
       if (typeof value !== 'number' || value < 1) {
@@ -62,7 +65,7 @@ Devvit.addSettings([
   {
     type: 'number',
     name: 'requests_per_day',
-    label: 'Set Requests per Day:',
+    label: 'Set Maximum Requests per Day:',
     defaultValue: DEFAULT_GEMINI_LIMITS.REQUESTS_PER_DAY,
     onValidate: async ({ value }) => {
       if (typeof value !== 'number' || value < 1) {
@@ -72,24 +75,21 @@ Devvit.addSettings([
   },
 ]);
 
-// Add new scheduler jobs for queue processing and cleanup
-Devvit.addSchedulerJob({
-  name: 'process_queue',
-  onRun: async (event, context: PartialContext) => {
-    console.info('Running process_queue job...');
-    await processQueue(context);
-  },
-});
+async function isReadyToProcess(context: PartialContext): Promise<boolean> {
+  const automaticMode = await context.settings?.get('automatic_mode');
+  const apiKey = await context.settings?.get('api_key');
+  return Boolean(automaticMode && apiKey && typeof apiKey === 'string' && apiKey.trim() !== '');
+}
 
-Devvit.addSchedulerJob({
-  name: 'cleanup_queue',
-  onRun: async (event, context: PartialContext) => {
-    console.info('Running cleanup_queue job...');
-    await cleanupQueue(context);
-  },
-});
+async function scheduleJob(context: PartialContext, name: string, cron: string, redisKey: string): Promise<void> {
+  console.info(`Scheduling ${name} job...`);
+  const jobId = await context.scheduler?.runJob({ cron, name, data: {} });
+  if (jobId) {
+    console.debug(`${name} job scheduled with ID: ${jobId}`);
+    await context.redis?.set(redisKey, jobId);
+  }
+}
 
-// Initialize or update the token bucket with current settings
 Devvit.addTrigger({
   event: 'AppInstall',
   onEvent: async (event, context: PartialContext) => {
@@ -100,52 +100,27 @@ Devvit.addTrigger({
       settings?.requests_per_day as number
     );
 
-    if (settings?.automatic_mode) {
-      // Schedule the scheduler jobs
-      try {
-        console.info('Scheduling reset_daily_requests job...');
-        const resetJobId = await context.scheduler?.runJob({
-          cron: '0 0 * * *', // Run daily at midnight
-          name: 'reset_daily_requests',
-          data: {},
-        });
-        if (resetJobId) {
-          console.debug(`reset_daily_requests job scheduled with ID: ${resetJobId}`);
-          await context.redis?.set('resetDailyRequestsJobId', resetJobId);
-        }
+    await scheduleJob(context, 'reset_daily_requests', CONSTANTS.CRON_DAILY_MIDNIGHT, 'resetDailyRequestsJobId');
+    await scheduleJob(context, 'cleanup_queue', CONSTANTS.CRON_HOURLY, 'cleanupQueueJobId');
+    await scheduleJob(context, 'process_queue', CONSTANTS.CRON_EVERY_30_SECONDS, 'processQueueJobId');
 
-        console.info('Scheduling process_queue job...');
-        const processQueueJobId = await context.scheduler?.runJob({
-          cron: '*/30 * * * * *', // Run every 30 seconds
-          name: 'process_queue',
-          data: {},
-        });
-        if (processQueueJobId) {
-          console.debug(`process_queue job scheduled with ID: ${processQueueJobId}`);
-          await context.redis?.set('processQueueJobId', processQueueJobId);
-        }
+    console.info('Jobs scheduled. Automatic summarization will start when conditions are met.');
+  },
+});
 
-        console.info('Scheduling cleanup_queue job...');
-        const cleanupQueueJobId = await context.scheduler?.runJob({
-          cron: '0 * * * *', // Run hourly
-          name: 'cleanup_queue',
-          data: {},
-        });
-        if (cleanupQueueJobId) {
-          console.debug(`cleanup_queue job scheduled with ID: ${cleanupQueueJobId}`);
-          await context.redis?.set('cleanupQueueJobId', cleanupQueueJobId);
-        }
-      } catch (e) {
-        console.error('Error scheduling jobs:', e);
-        throw e;
-      }
+Devvit.addSchedulerJob({
+  name: 'process_queue',
+  onRun: async (event, context: PartialContext) => {
+    const readyToProcess = await isReadyToProcess(context);
+    if (readyToProcess) {
+      console.info('Running process_queue job...');
+      await processQueue(context);
     } else {
-      console.info('Automatic summarization is disabled.');
+      console.info('Skipping process_queue job: not ready to process.');
     }
   },
 });
 
-// Handle AppUpdate similarly
 Devvit.addTrigger({
   event: 'AppUpgrade',
   onEvent: async (event, context: PartialContext) => {
@@ -156,58 +131,11 @@ Devvit.addTrigger({
       settings?.requests_per_day as number
     );
 
-    // Remove existing jobs
     try {
-      const resetJobId = await context.redis?.get('resetDailyRequestsJobId');
-      const processQueueJobId = await context.redis?.get('processQueueJobId');
-      const cleanupQueueJobId = await context.redis?.get('cleanupQueueJobId');
-
-      if (resetJobId) {
-        await context.scheduler?.cancelJob(resetJobId);
-        console.debug(`Removed reset_daily_requests job with ID: ${resetJobId}`);
-      }
-      if (processQueueJobId) {
-        await context.scheduler?.cancelJob(processQueueJobId);
-        console.debug(`Removed process_queue job with ID: ${processQueueJobId}`);
-      }
-      if (cleanupQueueJobId) {
-        await context.scheduler?.cancelJob(cleanupQueueJobId);
-        console.debug(`Removed cleanup_queue job with ID: ${cleanupQueueJobId}`);
-      }
-
-      // Reschedule if automatic_mode is enabled
-      if (settings?.automatic_mode) {
-        console.info('Rescheduling jobs due to AppUpdate...');
-        const newResetJobId = await context.scheduler?.runJob({
-          cron: '0 0 * * *',
-          name: 'reset_daily_requests',
-          data: {},
-        });
-        if (newResetJobId) {
-          console.debug(`reset_daily_requests job rescheduled with ID: ${newResetJobId}`);
-          await context.redis?.set('resetDailyRequestsJobId', newResetJobId);
-        }
-
-        const newProcessQueueJobId = await context.scheduler?.runJob({
-          cron: '*/30 * * * * *',
-          name: 'process_queue',
-          data: {},
-        });
-        if (newProcessQueueJobId) {
-          console.debug(`process_queue job rescheduled with ID: ${newProcessQueueJobId}`);
-          await context.redis?.set('processQueueJobId', newProcessQueueJobId);
-        }
-
-        const newCleanupQueueJobId = await context.scheduler?.runJob({
-          cron: '0 * * * *',
-          name: 'cleanup_queue',
-          data: {},
-        });
-        if (newCleanupQueueJobId) {
-          console.debug(`cleanup_queue job rescheduled with ID: ${newCleanupQueueJobId}`);
-          await context.redis?.set('cleanupQueueJobId', newCleanupQueueJobId);
-        }
-      }
+      console.info('Rescheduling jobs due to AppUpgrade...');
+      await scheduleJob(context, 'reset_daily_requests', CONSTANTS.CRON_DAILY_MIDNIGHT, 'resetDailyRequestsJobId');
+      await scheduleJob(context, 'process_queue', CONSTANTS.CRON_EVERY_30_SECONDS, 'processQueueJobId');
+      await scheduleJob(context, 'cleanup_queue', CONSTANTS.CRON_HOURLY, 'cleanupQueueJobId');
     } catch (e) {
       console.error('Error rescheduling jobs:', e);
       throw e;
@@ -215,7 +143,6 @@ Devvit.addTrigger({
   },
 });
 
-// Define the form outside of the menu item
 const aiSummaryForm = Devvit.createForm(
   {
     fields: [
@@ -225,6 +152,13 @@ const aiSummaryForm = Devvit.createForm(
         type: 'string',
         required: true,
       },
+      {
+        name: 'temperature',
+        label: 'Temperature (0.0 to 1.0)',
+        type: 'string',
+        defaultValue: CONSTANTS.DEFAULT_TEMPERATURE.toString(),
+        required: true,
+      },
     ],
     title: 'Create AI Summary',
     acceptLabel: 'Generate Summary',
@@ -232,31 +166,35 @@ const aiSummaryForm = Devvit.createForm(
   async (event, context) => {
     console.log('AI Summary form submitted');
     const apiKey = event.values.api_key.trim();
-    if (!apiKey) {
-      console.error('API Key is empty');
-      context.ui.showToast('API Key is required.');
-      return;
-    }
-
-    const postId = context.postId;
+    const temperature = parseFloat(event.values.temperature);
+    
     try {
-      console.info(`Manual summarization initiated for post ID: ${postId}`);
-      const post = await context.reddit.getPostById(postId as string);
-      if (!post) {
-        console.error('Post not found');
-        context.ui.showToast('Post not found.');
-        return;
+      if (!apiKey) {
+        throw new Error('API Key is required.');
+      }
+      if (isNaN(temperature) || temperature < 0 || temperature > 1) {
+        throw new Error('Temperature must be a number between 0 and 1.');
       }
 
-      // Get a unique token for archive.is
-      const submitToken = await getUniqueToken(context);
+      const postId = context.postId;
+      if (!postId) {
+        throw new Error('Unable to identify the post.');
+      }
 
-      const { title, content } = await fetchArticleContent(post.url, submitToken, context);
+      console.info(`Manual summarization initiated for post ID: ${postId}`);
+      const post = await context.reddit.getPostById(postId);
+      if (!post) {
+        throw new Error('Post not found.');
+      }
+
+      const submitToken = await getUniqueToken(context);
+      const { title, content, archiveUrl } = await fetchArticleContent(post.url, submitToken, context);
       console.log('Article content fetched');
-      const summary = await summarizeContent(title, content, context, apiKey);
+      
+      const summary = await summarizeContent(archiveUrl || post.url, title, content, context, apiKey, temperature);
       console.log('Summary generated');
       
-      await context.reddit.submitComment({ id: postId!, text: summary });
+      await context.reddit.submitComment({ id: postId, text: summary });
       console.log('Summary comment submitted');
       context.ui.showToast('AI summary created successfully!');
     } catch (error) {
@@ -266,7 +204,6 @@ const aiSummaryForm = Devvit.createForm(
   }
 );
 
-// Update the menu item to use the created form
 Devvit.addMenuItem({
   label: 'Create an AI Summary',
   location: 'post',
@@ -306,7 +243,6 @@ Devvit.addMenuItem({
   },
 });
 
-// Add trigger for new posts to enqueue them
 Devvit.addTrigger({
   event: 'PostSubmit',
   onEvent: async (event, context: PartialContext) => {
@@ -315,30 +251,6 @@ Devvit.addTrigger({
     const timestamp = Date.now();
     console.debug(`Enqueuing post ID: ${postId} at ${timestamp}`);
     await context.redis?.zAdd('post_queue', { member: postId, score: timestamp });
-  },
-});
-
-const myForm = Devvit.createForm(
-  {
-    fields: [
-      {
-        type: 'string',
-        name: 'food',
-        label: 'What is your favorite food?',
-      },
-    ],
-  },
-  (event, context) => {
-    // onSubmit handler
-    context.ui.showToast({ text: event.values.food ?? 'No food selected' });
-  }
-);
-
-Devvit.addMenuItem({
-  label: 'Show a form',
-  location: 'post',
-  onPress: async (_event, context) => {
-    context.ui.showForm(myForm);
   },
 });
 
