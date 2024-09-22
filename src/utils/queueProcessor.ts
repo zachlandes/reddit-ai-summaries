@@ -1,5 +1,5 @@
 import { Context } from '@devvit/public-api';
-import { fetchArticleContent, submitToArchive } from './scrapeUtils.js';
+import { fetchArticleContent, submitToArchive, getUniqueToken } from './scrapeUtils.js';
 import { summarizeContent } from './summaryUtils.js';
 
 // Define PartialContext type
@@ -7,44 +7,6 @@ type PartialContext = Partial<Context>;
 
 const MAX_RETRIES = 2; // Maximum number of retries before removing from queue
 const RETRY_INTERVAL = 300000; // 5 minutes in milliseconds
-const TOKEN_VALIDITY_DURATION = 60 * 60 * 1000; // 1 hour in milliseconds
-
-let cachedToken: string | null = null;
-let tokenExpirationTime: number = 0;
-
-async function getUniqueToken(context: PartialContext): Promise<string> {
-	const now = Date.now();
-	if (cachedToken && now < tokenExpirationTime) {
-		return cachedToken;
-	}
-
-	// Fetch new token from Redis or archive.is
-	const storedToken = await context.redis?.get('archive_token');
-	const storedExpiration = await context.redis?.get('archive_token_expiration');
-
-	if (storedToken && storedExpiration && now < parseInt(storedExpiration)) {
-		cachedToken = storedToken;
-		tokenExpirationTime = parseInt(storedExpiration);
-		return cachedToken;
-	}
-
-	// If no valid token in Redis, fetch from archive.is
-	const response = await fetch("http://archive.is/");
-	const html = await response.text();
-	
-	const submitidMatch = html.match(/name="submitid"\s+value="([^"]+)"/);
-	if (submitidMatch && submitidMatch[1]) {
-		cachedToken = submitidMatch[1];
-		tokenExpirationTime = now + TOKEN_VALIDITY_DURATION;
-		
-		// Store in Redis
-		await context.redis?.set('archive_token', cachedToken);
-		await context.redis?.set('archive_token_expiration', tokenExpirationTime.toString());
-		
-		return cachedToken;
-	}
-	throw new Error("Failed to obtain unique token");
-}
 
 export async function processQueue(context: PartialContext): Promise<void> {
 	console.info('Starting to process the queue...');
@@ -61,8 +23,9 @@ export async function processQueue(context: PartialContext): Promise<void> {
 	}
 
 	// Get or refresh the token before processing
+	let token;
 	try {
-		await getUniqueToken(context);
+		token = await getUniqueToken(context);
 	} catch (error) {
 		console.error('Failed to obtain archive.is token:', error);
 		return;
@@ -88,10 +51,10 @@ export async function processQueue(context: PartialContext): Promise<void> {
 
 			// Scrape content
 			console.debug(`Fetching article content from URL: ${url}`);
-			let { title, content, isArchived, archiveUrl } = await fetchArticleContent(url, cachedToken!);
+			let { title, content, isArchived, archiveUrl } = await fetchArticleContent(url, token, context);
 
 			if (!isArchived) {
-				await submitToArchive(url, cachedToken!);
+				await submitToArchive(url, token);
 				if (currentRetryCount >= MAX_RETRIES) {
 					console.warn(`Max retries reached for post ID ${postId.member}. Removing from queue.`);
 					await context.redis?.zRem('post_queue', [postId.member]);

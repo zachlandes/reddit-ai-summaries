@@ -249,9 +249,9 @@ const aiSummaryForm = Devvit.createForm(
       }
 
       // Get a unique token for archive.is
-      const submitToken = await getUniqueToken();
+      const submitToken = await getUniqueToken(context);
 
-      const { title, content } = await fetchArticleContent(post.url, submitToken);
+      const { title, content } = await fetchArticleContent(post.url, submitToken, context);
       console.log('Article content fetched');
       const summary = await summarizeContent(title, content, context, apiKey);
       console.log('Summary generated');
