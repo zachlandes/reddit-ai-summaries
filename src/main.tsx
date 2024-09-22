@@ -1,11 +1,12 @@
 import { Devvit, SettingScope, Context, SettingsFormFieldValidatorEvent } from '@devvit/public-api';
-import { tokenBucket } from './utils/tokenBucket.js';
+import { tokenBucketInstance } from './utils/tokenBucket.js';
 import { summarizeContent } from './utils/summaryUtils.js';
 import { DEFAULT_GEMINI_LIMITS } from './config/geminiLimits.js';
 import { processQueue, cleanupQueue } from './utils/queueProcessor.js';
 import { fetchArticleContent, getUniqueToken } from './utils/scrapeUtils.js';
-import { validateApiKey } from './utils/apiUtils.js';
+import { validateApiKey, checkAndUpdateApiKey } from './utils/apiUtils.js';
 import { CONSTANTS } from './config/constants.js';
+import { createHash } from 'crypto';
 
 type PartialContext = Partial<Context>;
 
@@ -73,6 +74,12 @@ Devvit.addSettings([
       }
     },
   },
+  {
+    type: 'boolean',
+    name: 'include_archive_link',
+    label: 'Include Archive Link in Summary:',
+    defaultValue: true,
+  },
 ]);
 
 async function isReadyToProcess(context: PartialContext): Promise<boolean> {
@@ -94,11 +101,13 @@ Devvit.addTrigger({
   event: 'AppInstall',
   onEvent: async (event, context: PartialContext) => {
     const settings = await context.settings?.getAll();
-    tokenBucket.updateLimits(
+    tokenBucketInstance.updateLimits(
       settings?.tokens_per_minute as number,
       settings?.requests_per_minute as number,
       settings?.requests_per_day as number
     );
+
+    await checkAndUpdateApiKey(context);
 
     await scheduleJob(context, 'reset_daily_requests', CONSTANTS.CRON_DAILY_MIDNIGHT, 'resetDailyRequestsJobId');
     await scheduleJob(context, 'cleanup_queue', CONSTANTS.CRON_HOURLY, 'cleanupQueueJobId');
@@ -125,11 +134,13 @@ Devvit.addTrigger({
   event: 'AppUpgrade',
   onEvent: async (event, context: PartialContext) => {
     const settings = await context.settings?.getAll();
-    tokenBucket.updateLimits(
+    tokenBucketInstance.updateLimits(
       settings?.tokens_per_minute as number,
       settings?.requests_per_minute as number,
       settings?.requests_per_day as number
     );
+
+    await checkAndUpdateApiKey(context);
 
     try {
       console.info('Rescheduling jobs due to AppUpgrade...');
@@ -191,7 +202,9 @@ const aiSummaryForm = Devvit.createForm(
       const { title, content, archiveUrl } = await fetchArticleContent(post.url, submitToken, context);
       console.log('Article content fetched');
       
-      const summary = await summarizeContent(archiveUrl || post.url, title, content, context, apiKey, temperature);
+      const includeArchiveLink = await context.settings?.get('include_archive_link') as boolean;
+      
+      const summary = await summarizeContent(archiveUrl || post.url, title, content, context, apiKey, temperature, includeArchiveLink);
       console.log('Summary generated');
       
       await context.reddit.submitComment({ id: postId, text: summary });

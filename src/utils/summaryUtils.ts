@@ -1,5 +1,5 @@
 import { Context } from '@devvit/public-api';
-import { tokenBucket } from './tokenBucket.js';
+import { TokenBucket, tokenBucketInstance } from './tokenBucket.js';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { CONSTANTS } from '../config/constants.js';
 
@@ -11,27 +11,46 @@ export async function summarizeContent(
   content: string,
   context: PartialContext,
   apiKey: string,
-  temperature: number = CONSTANTS.DEFAULT_TEMPERATURE
+  temperature: number = CONSTANTS.DEFAULT_TEMPERATURE,
+  includeArchiveLink: boolean = true
 ): Promise<string> {
   console.info('Starting summary generation...');
-  // Wait for available request slot
-  console.debug('Waiting for available request slot...');
-  await tokenBucket.waitForRequest(context);
-
-  // Estimate tokens (approx. 4 characters per token for English text)
-  const estimatedTokens = Math.ceil((title.length + content.length) / 4);
-  console.debug(`Estimated tokens required: ${estimatedTokens}`);
+  
+  // Estimate input tokens
+  const inputTokens = TokenBucket.estimateTokens(CONSTANTS.SUMMARY_SYSTEM_PROMPT + title + content);
+  
+  // Estimate potential output tokens (let's assume a maximum summary length)
+  const maxSummaryTokens = TokenBucket.estimateMaxTokens(CONSTANTS.MAX_SUMMARY_LENGTH);
+  
+  // Total estimated tokens
+  const totalEstimatedTokens = inputTokens + maxSummaryTokens;
+  
+  console.debug(`Estimated total tokens required: ${totalEstimatedTokens}`);
 
   // Wait for available tokens
   console.debug('Waiting for available tokens...');
-  await tokenBucket.waitForTokens(estimatedTokens, context);
+  await tokenBucketInstance.waitForTokens(totalEstimatedTokens, context);
 
-  // Generate the summary using Gemini
-  console.debug('Generating summary with Gemini API...');
-  const summary = await generateSummaryWithGemini(url, title, content, apiKey, temperature);
-  console.info('Summary generation completed.');
-  
-  return summary;
+  try {
+    const summary = await generateSummaryWithGemini(url, title, content, apiKey, temperature);
+    
+    // Release unused tokens
+    const actualOutputTokens = TokenBucket.estimateTokens(summary);
+    const unusedTokens = maxSummaryTokens - actualOutputTokens;
+    if (unusedTokens > 0) {
+      await tokenBucketInstance.releaseTokens(unusedTokens, context);
+    }
+
+    if (includeArchiveLink) {
+      return `${summary}\n\nArchived version: ${url}`;
+    }
+    
+    return summary;
+  } catch (error) {
+    // Release all reserved output tokens on error
+    await tokenBucketInstance.releaseTokens(maxSummaryTokens, context);
+    throw error;
+  }
 }
 
 async function generateSummaryWithGemini(

@@ -46,8 +46,10 @@ export class TokenBucket {
       const currentTokens = parseFloat(await context.redis?.get(TokenBucket.TOKENS_KEY) || '0');
       console.debug(`Current tokens available: ${currentTokens}`);
       if (currentTokens >= tokens) {
-        await context.redis?.set(TokenBucket.TOKENS_KEY, (currentTokens - tokens).toString());
-        console.debug(`Allocated ${tokens} tokens. Tokens left: ${currentTokens - tokens}`);
+        // Reserve tokens instead of immediately deducting
+        const reservedTokens = currentTokens - tokens;
+        await context.redis?.set(TokenBucket.TOKENS_KEY, reservedTokens.toString());
+        console.debug(`Reserved ${tokens} tokens. Tokens left: ${reservedTokens}`);
         break;
       }
       console.debug('Not enough tokens. Waiting...');
@@ -86,6 +88,34 @@ export class TokenBucket {
     await context.redis?.set(TokenBucket.TOKENS_KEY, this.tokensPerMinute.toString());
     console.debug(`Tokens reset to ${this.tokensPerMinute}.`);
   }
+
+  async releaseTokens(tokens: number, context: PartialContext): Promise<void> {
+    const currentTokens = parseFloat(await context.redis?.get(TokenBucket.TOKENS_KEY) || '0');
+    const updatedTokens = Math.min(currentTokens + tokens, this.tokensPerMinute);
+    await context.redis?.set(TokenBucket.TOKENS_KEY, updatedTokens.toString());
+    console.debug(`Released ${tokens} tokens. Total tokens now: ${updatedTokens}`);
+  }
+
+  static estimateTokens(text: string): number {
+    // A more accurate estimation method
+    // Gemini uses about 1 token per 4 characters for English text
+    return Math.ceil(text.length / 4);
+  }
+
+  static estimateMaxTokens(characterLimit: number): number {
+    // Estimate the maximum number of tokens for a given character limit
+    return Math.ceil(characterLimit / 4);
+  }
+
+  async resetBucket(context: PartialContext): Promise<void> {
+    console.info('Resetting token bucket...');
+    await context.redis?.set(TokenBucket.TOKENS_KEY, this.tokensPerMinute.toString());
+    await context.redis?.set(TokenBucket.REQUESTS_TODAY_KEY, '0');
+    await context.redis?.set(TokenBucket.LAST_REFILL_KEY, Date.now().toString());
+    await context.redis?.set(TokenBucket.LAST_REQUEST_KEY, '0');
+    console.debug('Token bucket reset completed.');
+  }
 }
 
-export const tokenBucket = new TokenBucket();
+// Create and export a single instance
+export const tokenBucketInstance = new TokenBucket();

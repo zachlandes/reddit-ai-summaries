@@ -2,12 +2,21 @@ import { Context } from '@devvit/public-api';
 import { fetchArticleContent, submitToArchive, getUniqueToken } from './scrapeUtils.js';
 import { summarizeContent } from './summaryUtils.js';
 import { CONSTANTS } from '../config/constants.js';
+import { tokenBucketInstance } from './tokenBucket.js';
+import { checkAndUpdateApiKey } from './apiUtils.js';
 
 type PartialContext = Partial<Context>;
 
 export async function processQueue(context: PartialContext): Promise<void> {
     console.info('Starting to process the queue...');
+    
     const now = Date.now();
+
+    const apiKeyChanged = await checkAndUpdateApiKey(context);
+    if (apiKeyChanged) {
+        console.info('API key changed. Resetting token bucket.');
+        await tokenBucketInstance.resetBucket(context);
+    }
 
     const apiKey = await context.settings?.get('api_key') as string;
     if (!apiKey) {
@@ -31,6 +40,8 @@ export async function processQueue(context: PartialContext): Promise<void> {
         console.error('Failed to obtain archive.is token:', error);
         return;
     }
+
+    const includeArchiveLink = await context.settings?.get('include_archive_link') as boolean;
 
     for (const postId of postIds.slice(0, 10)) {
         console.info(`Processing post ID: ${postId.member}`);
@@ -74,16 +85,15 @@ export async function processQueue(context: PartialContext): Promise<void> {
                     content,
                     context,
                     apiKey,
-                    CONSTANTS.DEFAULT_TEMPERATURE
+                    CONSTANTS.DEFAULT_TEMPERATURE,
+                    includeArchiveLink
                 );
                 console.debug(`Summary generated for post ID ${postId.member}`);
-
-                const summaryWithArchiveLink = `${summary}\n\nArchived version: ${archiveUrl}`;
 
                 console.info(`Submitting summary comment for post ID ${postId.member}`);
                 const comment = await context.reddit?.submitComment({
                     id: postId.member,
-                    text: summaryWithArchiveLink,
+                    text: summary,
                 });
 
                 if (comment) {
