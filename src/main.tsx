@@ -3,7 +3,7 @@ import { tokenBucket } from './utils/tokenBucket.js';
 import { summarizeContent } from './utils/summaryUtils.js';
 import { DEFAULT_GEMINI_LIMITS } from './config/geminiLimits.js';
 import { processQueue, cleanupQueue } from './utils/queueProcessor.js';
-import { fetchArticleContent } from './utils/scrapeUtils.js';
+import { fetchArticleContent, getUniqueToken } from './utils/scrapeUtils.js';
 
 // Define a type for partial context
 type PartialContext = Partial<Context>;
@@ -248,7 +248,10 @@ const aiSummaryForm = Devvit.createForm(
         return;
       }
 
-      const { title, content } = await fetchArticleContent(post.url);
+      // Get a unique token for archive.is
+      const submitToken = await getUniqueToken();
+
+      const { title, content } = await fetchArticleContent(post.url, submitToken);
       console.log('Article content fetched');
       const summary = await summarizeContent(title, content, context, apiKey);
       console.log('Summary generated');
@@ -295,7 +298,7 @@ Devvit.addMenuItem({
       }
 
       console.log('Showing AI summary form');
-      context.ui.showForm(aiSummaryForm, { postId: context.postId });
+      context.ui.showForm(aiSummaryForm);
     } catch (error) {
       console.error('Error in AI Summary menu item:', error);
       context.ui.showToast('An error occurred while processing your request. Please try again.');
@@ -312,6 +315,30 @@ Devvit.addTrigger({
     const timestamp = Date.now();
     console.debug(`Enqueuing post ID: ${postId} at ${timestamp}`);
     await context.redis?.zAdd('post_queue', { member: postId, score: timestamp });
+  },
+});
+
+const myForm = Devvit.createForm(
+  {
+    fields: [
+      {
+        type: 'string',
+        name: 'food',
+        label: 'What is your favorite food?',
+      },
+    ],
+  },
+  (event, context) => {
+    // onSubmit handler
+    context.ui.showToast({ text: event.values.food ?? 'No food selected' });
+  }
+);
+
+Devvit.addMenuItem({
+  label: 'Show a form',
+  location: 'post',
+  onPress: async (_event, context) => {
+    context.ui.showForm(myForm);
   },
 });
 
