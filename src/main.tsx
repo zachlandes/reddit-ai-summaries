@@ -6,7 +6,6 @@ import { processQueue, cleanupQueue } from './utils/queueProcessor.js';
 import { fetchArticleContent, getUniqueToken } from './utils/scrapeUtils.js';
 import { validateApiKey, checkAndUpdateApiKey } from './utils/apiUtils.js';
 import { CONSTANTS } from './config/constants.js';
-import { createHash } from 'crypto';
 
 type PartialContext = Partial<Context>;
 

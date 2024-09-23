@@ -1,6 +1,6 @@
 import { CONSTANTS } from '../config/constants.js';
-import { createHash } from 'crypto';
 import { Context } from '@devvit/public-api';
+import { sha256 } from './hashUtils.js';
 
 type PartialContext = Partial<Context>;
 
@@ -20,7 +20,7 @@ export async function checkAndUpdateApiKey(context: PartialContext): Promise<boo
   
   if (!apiKey) return false;
 
-  const newHash = createHash('sha256').update(apiKey).digest('hex');
+  const newHash = sha256(apiKey);
   
   if (newHash !== storedHash) {
     await context.redis?.set('api_key_hash', newHash);
