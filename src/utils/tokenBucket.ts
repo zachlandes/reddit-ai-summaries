@@ -19,10 +19,21 @@ export class TokenBucket {
     this.requestsPerDay = DEFAULT_GEMINI_LIMITS.REQUESTS_PER_DAY;
   }
 
-  updateLimits(tokensPerMinute: number, requestsPerMinute: number, requestsPerDay: number) {
+  async updateLimits(tokensPerMinute: number, requestsPerMinute: number, requestsPerDay: number, context: PartialContext) {
     this.tokensPerMinute = tokensPerMinute;
     this.requestsPerMinute = requestsPerMinute;
     this.requestsPerDay = requestsPerDay;
+
+    // Update the current tokens to respect the new limit
+    const currentTokens = parseFloat(await context.redis?.get(TokenBucket.TOKENS_KEY) || '0');
+    const updatedTokens = Math.min(currentTokens, this.tokensPerMinute);
+    await context.redis?.set(TokenBucket.TOKENS_KEY, updatedTokens.toString());
+
+    // Reset the last refill time to now
+    await context.redis?.set(TokenBucket.LAST_REFILL_KEY, Date.now().toString());
+
+    console.debug(`Updated limits: ${tokensPerMinute} tokens/min, ${requestsPerMinute} requests/min, ${requestsPerDay} requests/day`);
+    console.debug(`Current tokens adjusted to: ${updatedTokens}`);
   }
 
   private async refill(context: PartialContext): Promise<void> {
@@ -114,6 +125,21 @@ export class TokenBucket {
     await context.redis?.set(TokenBucket.LAST_REFILL_KEY, Date.now().toString());
     await context.redis?.set(TokenBucket.LAST_REQUEST_KEY, '0');
     console.debug('Token bucket reset completed.');
+  }
+
+  async checkAndUpdateLimits(context: PartialContext): Promise<void> {
+    const settings = await context.settings?.getAll();
+    const newTokensPerMinute = settings?.tokens_per_minute as number || DEFAULT_GEMINI_LIMITS.TOKENS_PER_MINUTE;
+    const newRequestsPerMinute = settings?.requests_per_minute as number || DEFAULT_GEMINI_LIMITS.REQUESTS_PER_MINUTE;
+    const newRequestsPerDay = settings?.requests_per_day as number || DEFAULT_GEMINI_LIMITS.REQUESTS_PER_DAY;
+
+    if (
+      newTokensPerMinute !== this.tokensPerMinute ||
+      newRequestsPerMinute !== this.requestsPerMinute ||
+      newRequestsPerDay !== this.requestsPerDay
+    ) {
+      await this.updateLimits(newTokensPerMinute, newRequestsPerMinute, newRequestsPerDay, context);
+    }
   }
 }
 

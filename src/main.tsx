@@ -90,6 +90,17 @@ async function isReadyToProcess(context: PartialContext): Promise<boolean> {
 
 async function scheduleJob(context: PartialContext, name: string, cron: string, redisKey: string): Promise<void> {
   console.info(`Scheduling ${name} job...`);
+  const existingJobId = await context.redis?.get(redisKey);
+  
+  if (existingJobId) {
+    try {
+      await context.scheduler?.cancelJob(existingJobId);
+      console.debug(`Deleted existing ${name} job with ID: ${existingJobId}`);
+    } catch (error) {
+      console.error(`Error deleting existing ${name} job:`, error);
+    }
+  }
+
   const jobId = await context.scheduler?.runJob({ cron, name, data: {} });
   if (jobId) {
     console.debug(`${name} job scheduled with ID: ${jobId}`);
@@ -97,23 +108,37 @@ async function scheduleJob(context: PartialContext, name: string, cron: string, 
   }
 }
 
+async function scheduleAllJobs(context: PartialContext) {
+  const jobsToSchedule = [
+    { name: 'reset_daily_requests', cron: CONSTANTS.CRON_DAILY_MIDNIGHT, redisKey: 'resetDailyRequestsJobId' },
+    { name: 'cleanup_queue', cron: CONSTANTS.CRON_HOURLY, redisKey: 'cleanupQueueJobId' },
+    { name: 'process_queue', cron: CONSTANTS.CRON_EVERY_30_SECONDS, redisKey: 'processQueueJobId' }
+  ];
+
+  for (const job of jobsToSchedule) {
+    await scheduleJob(context, job.name, job.cron, job.redisKey);
+  }
+}
+
+async function handleApiKeyChange(context: PartialContext) {
+  const settings = await context.settings?.getAll();
+  await tokenBucketInstance.updateLimits(
+    settings?.tokens_per_minute as number,
+    settings?.requests_per_minute as number,
+    settings?.requests_per_day as number,
+    context
+  );
+  
+  // Optionally, you could trigger an immediate queue processing here
+  // to handle any posts that might have been waiting due to rate limits
+  await processQueue(context);
+}
+
 Devvit.addTrigger({
   event: 'AppInstall',
   onEvent: async (event, context: PartialContext) => {
-    const settings = await context.settings?.getAll();
-    tokenBucketInstance.updateLimits(
-      settings?.tokens_per_minute as number,
-      settings?.requests_per_minute as number,
-      settings?.requests_per_day as number
-    );
-
-    // Commented out API key hash checking
-    // await checkAndUpdateApiKey(context);
-
-    await scheduleJob(context, 'reset_daily_requests', CONSTANTS.CRON_DAILY_MIDNIGHT, 'resetDailyRequestsJobId');
-    await scheduleJob(context, 'cleanup_queue', CONSTANTS.CRON_HOURLY, 'cleanupQueueJobId');
-    await scheduleJob(context, 'process_queue', CONSTANTS.CRON_EVERY_30_SECONDS, 'processQueueJobId');
-
+    await tokenBucketInstance.checkAndUpdateLimits(context);
+    await scheduleAllJobs(context);
     console.info('Jobs scheduled. Automatic summarization will start when conditions are met.');
   },
 });
@@ -134,24 +159,27 @@ Devvit.addSchedulerJob({
 Devvit.addTrigger({
   event: 'AppUpgrade',
   onEvent: async (event, context: PartialContext) => {
-    const settings = await context.settings?.getAll();
-    tokenBucketInstance.updateLimits(
-      settings?.tokens_per_minute as number,
-      settings?.requests_per_minute as number,
-      settings?.requests_per_day as number
-    );
-
-    // Commented out API key hash checking
-    // await checkAndUpdateApiKey(context);
-
+    const upgradeInProgress = await context.redis?.get('upgrade_in_progress');
+    if (upgradeInProgress) {
+      console.log('An upgrade is already in progress. Skipping this trigger.');
+      return;
+    }
+    
+    await context.redis?.set('upgrade_in_progress', 'true');
+    await context.redis?.expire('upgrade_in_progress', 60);
+    
     try {
-      console.info('Rescheduling jobs due to AppUpgrade...');
-      await scheduleJob(context, 'reset_daily_requests', CONSTANTS.CRON_DAILY_MIDNIGHT, 'resetDailyRequestsJobId');
-      await scheduleJob(context, 'process_queue', CONSTANTS.CRON_EVERY_30_SECONDS, 'processQueueJobId');
-      await scheduleJob(context, 'cleanup_queue', CONSTANTS.CRON_HOURLY, 'cleanupQueueJobId');
+      const upgradeId = Date.now().toString();
+      console.log(`Starting AppUpgrade process: ${upgradeId}`);
+
+      await tokenBucketInstance.checkAndUpdateLimits(context);
+      await scheduleAllJobs(context);
+
+      console.log(`Completed AppUpgrade process: ${upgradeId}`);
     } catch (e) {
-      console.error('Error rescheduling jobs:', e);
-      throw e;
+      console.error('Error during AppUpgrade:', e);
+    } finally {
+      await context.redis?.del('upgrade_in_progress');
     }
   },
 });
