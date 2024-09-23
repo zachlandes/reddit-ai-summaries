@@ -6,6 +6,7 @@ import { processQueue, cleanupQueue } from './utils/queueProcessor.js';
 import { fetchArticleContent, getUniqueToken } from './utils/scrapeUtils.js';
 import { validateApiKey, checkAndUpdateApiKey } from './utils/apiUtils.js';
 import { CONSTANTS } from './config/constants.js';
+//import { sha256 } from './utils/hashUtils.js';
 
 type PartialContext = Partial<Context>;
 
@@ -106,7 +107,8 @@ Devvit.addTrigger({
       settings?.requests_per_day as number
     );
 
-    await checkAndUpdateApiKey(context);
+    // Commented out API key hash checking
+    // await checkAndUpdateApiKey(context);
 
     await scheduleJob(context, 'reset_daily_requests', CONSTANTS.CRON_DAILY_MIDNIGHT, 'resetDailyRequestsJobId');
     await scheduleJob(context, 'cleanup_queue', CONSTANTS.CRON_HOURLY, 'cleanupQueueJobId');
@@ -139,7 +141,8 @@ Devvit.addTrigger({
       settings?.requests_per_day as number
     );
 
-    await checkAndUpdateApiKey(context);
+    // Commented out API key hash checking
+    // await checkAndUpdateApiKey(context);
 
     try {
       console.info('Rescheduling jobs due to AppUpgrade...');
@@ -182,6 +185,14 @@ const aiSummaryForm = Devvit.createForm(
       if (!apiKey) {
         throw new Error('API Key is required.');
       }
+
+      // Validate the manually provided API key
+      const isValidApiKey = await validateApiKey(apiKey);
+      if (!isValidApiKey) {
+        context.ui.showToast('Invalid API Key. Please check and try again.');
+        throw new Error('Invalid API Key. Please check and try again.');
+      }
+
       if (isNaN(temperature) || temperature < 0 || temperature > 1) {
         throw new Error('Temperature must be a number between 0 and 1.');
       }
