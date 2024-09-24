@@ -2,7 +2,7 @@ import { Devvit, SettingScope, Context, SettingsFormFieldValidatorEvent } from '
 import { tokenBucketInstance } from './utils/tokenBucket.js';
 import { summarizeContent } from './utils/summaryUtils.js';
 import { DEFAULT_GEMINI_LIMITS } from './config/geminiLimits.js';
-import { processQueue, cleanupQueue } from './utils/queueProcessor.js';
+import { processQueue } from './utils/queueProcessor.js';
 import { fetchArticleContent, getUniqueToken } from './utils/scrapeUtils.js';
 import { validateApiKey, checkAndUpdateApiKey } from './utils/apiUtils.js';
 import { CONSTANTS } from './config/constants.js';
