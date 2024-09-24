@@ -4,14 +4,14 @@ import { DEFAULT_GEMINI_LIMITS } from '../config/geminiLimits.js';
 type PartialContext = Partial<Context>;
 
 export class TokenBucket {
-  private static readonly TOKENS_KEY = 'tokens';
-  private static readonly LAST_REFILL_KEY = 'last_refill';
-  private static readonly REQUESTS_TODAY_KEY = 'requests_today';
-  private static readonly LAST_REQUEST_KEY = 'last_request';
+  static readonly TOKENS_KEY = 'tokens';
+  static readonly LAST_REFILL_KEY = 'last_refill';
+  static readonly REQUESTS_TODAY_KEY = 'requests_today';
+  static readonly LAST_REQUEST_KEY = 'last_request';
 
-  private tokensPerMinute: number;
-  private requestsPerMinute: number;
-  private requestsPerDay: number;
+  public tokensPerMinute: number;
+  public requestsPerMinute: number;
+  public requestsPerDay: number;
 
   constructor() {
     this.tokensPerMinute = DEFAULT_GEMINI_LIMITS.TOKENS_PER_MINUTE;
@@ -50,22 +50,19 @@ export class TokenBucket {
     await context.redis?.set(TokenBucket.LAST_REFILL_KEY, now.toString());
   }
 
-  async waitForTokens(tokens: number, context: PartialContext): Promise<void> {
-    console.debug(`Waiting for ${tokens} tokens...`);
-    while (true) {
+  async waitForTokens(tokens: number, context: PartialContext, timeout: number): Promise<boolean> {
+    const startTime = Date.now();
+    while (Date.now() - startTime < timeout) {
       await this.refill(context);
       const currentTokens = parseFloat(await context.redis?.get(TokenBucket.TOKENS_KEY) || '0');
-      console.debug(`Current tokens available: ${currentTokens}`);
       if (currentTokens >= tokens) {
-        // Reserve tokens instead of immediately deducting
         const reservedTokens = currentTokens - tokens;
         await context.redis?.set(TokenBucket.TOKENS_KEY, reservedTokens.toString());
-        console.debug(`Reserved ${tokens} tokens. Tokens left: ${reservedTokens}`);
-        break;
+        return true;
       }
-      console.debug('Not enough tokens. Waiting...');
       await new Promise(resolve => setTimeout(resolve, 100));
     }
+    return false;
   }
 
   async waitForRequest(context: PartialContext): Promise<void> {
@@ -141,7 +138,25 @@ export class TokenBucket {
       await this.updateLimits(newTokensPerMinute, newRequestsPerMinute, newRequestsPerDay, context);
     }
   }
+
+  async checkRequestAvailability(context: PartialContext, timeout: number): Promise<boolean> {
+    const startTime = Date.now();
+    while (Date.now() - startTime < timeout) {
+      const now = Date.now();
+      const lastRequest = parseInt(await context.redis?.get(TokenBucket.LAST_REQUEST_KEY) || '0');
+      const requestsToday = parseInt(await context.redis?.get(TokenBucket.REQUESTS_TODAY_KEY) || '0');
+      
+      if (requestsToday >= this.requestsPerDay) {
+        throw new Error('DailyRequestLimitReached');
+      }
+      
+      if (now - lastRequest >= 60000 / this.requestsPerMinute) {
+        return true;
+      }
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    return false;
+  }
 }
 
-// Create and export a single instance
 export const tokenBucketInstance = new TokenBucket();

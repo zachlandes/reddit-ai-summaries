@@ -2,7 +2,7 @@ import { Context } from '@devvit/public-api';
 import { fetchArticleContent, submitToArchive, getUniqueToken } from './scrapeUtils.js';
 import { summarizeContent } from './summaryUtils.js';
 import { CONSTANTS } from '../config/constants.js';
-import { tokenBucketInstance } from './tokenBucket.js';
+import { tokenBucketInstance, TokenBucket } from './tokenBucket.js';
 import { checkAndUpdateApiKey } from './apiUtils.js';
 
 type PartialContext = Partial<Context>;
@@ -10,6 +10,13 @@ type PartialContext = Partial<Context>;
 export async function processQueue(context: PartialContext): Promise<void> {
     console.info('Starting to process the queue...');
     
+    // Check if daily request limit has been reached
+    const requestsToday = parseInt(await context.redis?.get(TokenBucket.REQUESTS_TODAY_KEY) || '0');
+    if (requestsToday >= tokenBucketInstance.requestsPerDay) {
+        console.warn('Daily request limit reached. Pausing queue processing.');
+        return;
+    }
+
     const now = Date.now();
 
     const apiKeyChanged = await checkAndUpdateApiKey(context);
@@ -41,6 +48,7 @@ export async function processQueue(context: PartialContext): Promise<void> {
         return;
     }
 
+    const automaticMode = await context.settings?.get('automatic_mode') as boolean;
     const includeArchiveLink = await context.settings?.get('include_archive_link') as boolean;
 
     for (const postId of postIds.slice(0, 10)) {
@@ -58,11 +66,24 @@ export async function processQueue(context: PartialContext): Promise<void> {
             const retryCount = await context.redis?.hGet(`retry:${postId.member}`, 'count') || '0';
             const currentRetryCount = parseInt(retryCount, 10);
 
-            console.debug(`Fetching article content from URL: ${url}`);
-            let { title, content, isArchived, archiveUrl } = await fetchArticleContent(url, token, context);
+            let title, content, isArchived, archiveUrl;
+            try {
+                console.debug(`Fetching article content from URL: ${url}`);
+                ({ title, content, isArchived, archiveUrl } = await fetchArticleContent(url, token, context));
+            } catch (fetchError) {
+                console.error(`Error fetching content for post ${postId.member}:`, fetchError);
+                await retryWithDelay(context, postId.member, currentRetryCount, now);
+                continue;
+            }
 
             if (!isArchived) {
-                await submitToArchive(url, token);
+                try {
+                    await submitToArchive(url, token);
+                } catch (archiveError) {
+                    console.error(`Error submitting to archive for post ${postId.member}:`, archiveError);
+                    await retryWithDelay(context, postId.member, currentRetryCount, now);
+                    continue;
+                }
                 if (currentRetryCount >= CONSTANTS.MAX_RETRIES) {
                     console.warn(`Max retries reached for post ID ${postId.member}. Removing from queue.`);
                     await context.redis?.zRem('post_queue', [postId.member]);
@@ -109,12 +130,49 @@ export async function processQueue(context: PartialContext): Promise<void> {
                 console.info(`Successfully processed post ID ${postId.member}`);
             } catch (summaryError) {
                 console.error(`Error generating summary for post ${postId.member}:`, summaryError);
+                if (summaryError instanceof Error && summaryError.message === 'DailyRequestLimitReached') {
+                    console.warn('Daily request limit reached during processing. Stopping further processing.');
+                    break; // Exit the loop to stop processing more items
+                } else if (automaticMode && includeArchiveLink && archiveUrl) {
+                    try {
+                        const archiveLinkComment = `Archived version: ${archiveUrl}\n\n*I am an AI-powered bot and this action was performed automatically. Questions or concerns? Contact us.*`;
+                        await context.reddit?.submitComment({
+                            id: postId.member,
+                            text: archiveLinkComment,
+                        });
+                        console.info(`Posted archive link comment for post ID ${postId.member}`);
+                    } catch (commentError) {
+                        console.error(`Error posting archive link comment for post ${postId.member}:`, commentError);
+                    }
+                }
+                // Handle summary errors without retrying
                 await handleSummaryError(context, postId.member, summaryError, currentRetryCount, now);
             }
         } catch (error) {
             console.error(`Error processing post ${postId.member}:`, error);
+            // Handle general processing errors without retrying
             await handleProcessingError(context, postId.member, error, now);
         }
+    }
+}
+
+async function retryWithDelay(
+    context: PartialContext,
+    postId: string,
+    currentRetryCount: number,
+    now: number
+): Promise<void> {
+    if (currentRetryCount < CONSTANTS.MAX_RETRIES) {
+        console.warn(`Retrying post ID ${postId} later with delay.`);
+        await context.redis?.zAdd('post_queue', { 
+            member: postId, 
+            score: now + CONSTANTS.RETRY_INTERVAL + CONSTANTS.RETRY_DELAY 
+        });
+        await context.redis?.hSet(`retry:${postId}`, { count: (currentRetryCount + 1).toString() });
+    } else {
+        console.warn(`Max retries reached for post ID ${postId}. Removing from queue.`);
+        await context.redis?.zRem('post_queue', [postId]);
+        await context.redis?.del(`retry:${postId}`);
     }
 }
 

@@ -27,9 +27,29 @@ export async function summarizeContent(
   
   console.debug(`Estimated total tokens required: ${totalEstimatedTokens}`);
 
-  // Wait for available tokens
+  // Check for available request slot with a timeout
+  console.debug('Checking for available request slot...');
+  try {
+    const requestSlotAvailable = await tokenBucketInstance.checkRequestAvailability(context, CONSTANTS.REQUEST_SLOT_TIMEOUT);
+    if (!requestSlotAvailable) {
+      console.warn('Request slot not available within timeout period.');
+      throw new Error('RequestSlotUnavailable');
+    }
+  } catch (error) {
+    if (error instanceof Error && error.message === 'DailyRequestLimitReached') {
+      throw error; // Propagate this error to be handled in processQueue
+    }
+    console.warn('Request slot not available within timeout period.');
+    throw new Error('RequestSlotUnavailable');
+  }
+
+  // Wait for available tokens with a timeout
   console.debug('Waiting for available tokens...');
-  await tokenBucketInstance.waitForTokens(totalEstimatedTokens, context);
+  const tokensAvailable = await tokenBucketInstance.waitForTokens(totalEstimatedTokens, context, CONSTANTS.TOKEN_WAIT_TIMEOUT);
+  if (!tokensAvailable) {
+    console.warn('Tokens not available within timeout period.');
+    throw new Error('TokensUnavailable');
+  }
 
   try {
     const summary = await generateSummaryWithGemini(url, title, content, apiKey, temperature);
