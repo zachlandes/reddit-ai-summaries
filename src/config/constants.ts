@@ -1,7 +1,6 @@
 export const CONSTANTS = {
   GEMINI_API_TEST_ENDPOINT: 'https://generativelanguage.googleapis.com/v1/models',
-  ARCHIVE_IS_URL: 'https://archive.is/',
-  ARCHIVE_PH_URL: 'https://archive.ph/',
+  TWELVE_FT_URL: 'https://12ft.io/',
   TOKEN_VALIDITY_DURATION: 60 * 60 * 1000, // 1 hour in milliseconds
   RETRY_INTERVAL: 300000, // 5 minutes in milliseconds
   MAX_RETRIES: 2,

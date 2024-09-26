@@ -1,5 +1,5 @@
 import { Context } from '@devvit/public-api';
-import { fetchArticleContent, submitToArchive, getUniqueToken } from './scrapeUtils.js';
+import { fetchArticleContent } from './scrapeUtils.js';
 import { summarizeContent } from './summaryUtils.js';
 import { CONSTANTS } from '../config/constants.js';
 import { tokenBucketInstance, TokenBucket } from './tokenBucket.js';
@@ -30,30 +30,18 @@ export async function processQueue(context: PartialContext): Promise<void> {
         return;
     }
 
-    let token: string;
-    try {
-        token = await getUniqueToken(context);
-    } catch (error) {
-        console.error('Failed to obtain archive.is token:', error);
-        // Optionally, you can choose to reschedule the queue processing here
-        // For example:
-        // await rescheduleQueueProcessing(context);
-        return;
-    }
+
 
     const settings = await getSettings(context);
-    const automaticMode = settings.automaticMode;
-    const includeArchiveLink = settings.includeArchiveLink;
+    const includeScriptlessLink = settings.includeScriptlessLink;
 
     // Process up to 10 posts at a time to prevent overwhelming the system
     for (const post of postIds.slice(0, 10)) {
         await processSinglePost(
             post.member,
             context,
-            token,
             apiKey,
-            automaticMode,
-            includeArchiveLink
+            includeScriptlessLink
         );
     }
 
@@ -93,19 +81,17 @@ async function fetchPostIds(context: PartialContext): Promise<{ member: string }
     return postIds.map(({ member }) => ({ member }));
 }
 
-async function getSettings(context: PartialContext): Promise<{ automaticMode: boolean; includeArchiveLink: boolean }> {
+async function getSettings(context: PartialContext): Promise<{ automaticMode: boolean; includeScriptlessLink: boolean }> {
     const automaticMode = (await context.settings?.get('automatic_mode')) as boolean;
-    const includeArchiveLink = (await context.settings?.get('include_archive_link')) as boolean;
-    return { automaticMode, includeArchiveLink };
+    const includeScriptlessLink = (await context.settings?.get('include_scriptless_link')) as boolean;
+    return { automaticMode, includeScriptlessLink };
 }
 
 async function processSinglePost(
     postId: string,
     context: PartialContext,
-    token: string,
     apiKey: string,
-    automaticMode: boolean,
-    includeArchiveLink: boolean
+    includeScriptlessLink: boolean
 ): Promise<void> {
     console.info(`Processing post ID: ${postId}`);
     try {
@@ -121,21 +107,16 @@ async function processSinglePost(
 
         const currentRetryCount = await getCurrentRetryCount(context, postId);
 
-        let title: string, content: string, isArchived: boolean, archiveUrl: string | null;
+        let title: string, content: string, scriptlessUrl: string | null;
         try {
-            ({ title, content, isArchived, archiveUrl } = await fetchArticleContent(url, token, context));
+            ({ title, content, scriptlessUrl } = await fetchArticleContent(url, context));
         } catch (fetchError) {
             console.error(`Error fetching content for post ${postId}:`, fetchError);
             await retryPost(context, postId, currentRetryCount);
             return;
         }
 
-        if (!isArchived) {
-            await handleArchiving(context, postId, url, token, currentRetryCount);
-            return;
-        }
-
-        await generateAndSubmitSummary(context, postId, archiveUrl || url, title, content, apiKey, includeArchiveLink);
+        await generateAndSubmitSummary(context, postId, scriptlessUrl || url, title, content, apiKey, includeScriptlessLink);
     } catch (error) {
         console.error(`Error processing post ${postId}:`, error);
         await handleGeneralError(context, postId, error);
@@ -162,32 +143,6 @@ async function retryPost(context: PartialContext, postId: string, currentRetryCo
     }
 }
 
-async function handleArchiving(
-    context: PartialContext,
-    postId: string,
-    url: string,
-    token: string,
-    currentRetryCount: number
-): Promise<void> {
-    try {
-        await submitToArchive(url, token, context);
-    } catch (archiveError) {
-        console.error(`Error submitting to archive for post ID ${postId}:`, archiveError);
-        await retryPost(context, postId, currentRetryCount);
-        return;
-    }
-
-    if (currentRetryCount >= CONSTANTS.MAX_RETRIES) {
-        console.warn(`Max retries reached for post ID ${postId}. Removing from queue.`);
-        await context.redis?.zRem('post_queue', [postId]);
-        await context.redis?.del(`retry:${postId}`);
-    } else {
-        console.debug(`Content not yet archived for post ID ${postId}. Will retry later.`);
-        await context.redis?.zAdd('post_queue', { member: postId, score: Date.now() + CONSTANTS.RETRY_INTERVAL });
-        await context.redis?.hSet(`retry:${postId}`, { count: (currentRetryCount + 1).toString() });
-    }
-}
-
 async function generateAndSubmitSummary(
     context: PartialContext,
     postId: string,
@@ -195,11 +150,11 @@ async function generateAndSubmitSummary(
     title: string,
     content: string,
     apiKey: string,
-    includeArchiveLink: boolean
+    includeScriptlessLink: boolean
 ): Promise<void> {
     console.debug(`Generating summary for post ID ${postId}`);
     try {
-        const summary = await summarizeContent(url, title, content, context, apiKey, CONSTANTS.DEFAULT_TEMPERATURE, includeArchiveLink);
+        const summary = await summarizeContent(url, title, content, context, apiKey, CONSTANTS.DEFAULT_TEMPERATURE, includeScriptlessLink);
         console.debug(`Summary generated for post ID ${postId}`);
 
         console.info(`Submitting summary comment for post ID ${postId}`);

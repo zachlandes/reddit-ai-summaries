@@ -1,12 +1,11 @@
-import { Devvit, SettingScope, Context, SettingsFormFieldValidatorEvent } from '@devvit/public-api';
+import { Devvit, Context, SettingsFormFieldValidatorEvent } from '@devvit/public-api';
 import { tokenBucketInstance } from './utils/tokenBucket.js';
 import { summarizeContent } from './utils/summaryUtils.js';
 import { DEFAULT_GEMINI_LIMITS } from './config/geminiLimits.js';
 import { processQueue } from './utils/queueProcessor.js';
-import { fetchArticleContent, getUniqueToken } from './utils/scrapeUtils.js';
-import { validateApiKey, checkAndUpdateApiKey } from './utils/apiUtils.js';
+import { fetchArticleContent } from './utils/scrapeUtils.js';
+import { validateApiKey } from './utils/apiUtils.js';
 import { CONSTANTS } from './config/constants.js';
-import { ScheduledJob, ScheduledCronJob, JSONObject } from '@devvit/public-api';
 
 type PartialContext = Partial<Context>;
 
@@ -76,8 +75,8 @@ Devvit.addSettings([
   },
   {
     type: 'boolean',
-    name: 'include_archive_link',
-    label: 'Include Archive Link in Summary:',
+    name: 'include_scriptless_link',
+    label: 'Include 12ft.io Scriptless Link in Summary:',
     defaultValue: true,
   },
 ]);
@@ -268,13 +267,12 @@ const aiSummaryForm = Devvit.createForm(
         throw new Error('Post not found.');
       }
 
-      const submitToken = await getUniqueToken(context);
-      const { title, content, archiveUrl } = await fetchArticleContent(post.url, submitToken, context);
+      const { title, content, scriptlessUrl } = await fetchArticleContent(post.url, context);
       console.log('Article content fetched');
       
-      const includeArchiveLink = await context.settings?.get('include_archive_link') as boolean;
+      const includeScriptlessLink = await context.settings?.get('include_scriptless_link') as boolean;
       
-      const summary = await summarizeContent(archiveUrl || post.url, title, content, context, apiKey, temperature, includeArchiveLink);
+      const summary = await summarizeContent(scriptlessUrl || post.url, title, content, context, apiKey, temperature, includeScriptlessLink);
       console.log('Summary generated');
       
       await context.reddit.submitComment({ id: postId, text: summary });

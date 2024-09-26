@@ -12,7 +12,7 @@ export async function summarizeContent(
   context: PartialContext,
   apiKey: string,
   temperature: number = CONSTANTS.DEFAULT_TEMPERATURE,
-  includeArchiveLink: boolean = true
+  includeScriptlessLink: boolean = true
 ): Promise<string> {
   console.info('Starting summary generation...');
   
@@ -61,8 +61,8 @@ export async function summarizeContent(
       await tokenBucketInstance.releaseTokens(unusedTokens, context);
     }
 
-    if (includeArchiveLink) {
-      return `${summary}\n\nArchived version: ${url}`;
+    if (includeScriptlessLink) {
+      return `${summary}\n\nScriptless version: ${url}`;
     }
     
     return summary;

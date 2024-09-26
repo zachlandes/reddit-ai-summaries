@@ -10,7 +10,7 @@ Key features:
 - Automatic summarization of new posts
 - Manual summarization option for specific posts
 - Summaries posted as stickied comments for easy visibility
-- Includes an archive.is link to ensure the original article is always accessible and bypass soft paywalls (optional)
+- Includes an 12ft.io link to ensure the article is accessible without scripts (optional)
 - Multilingual support: summarizes content in its original language and provides an English translation
 - Uses Google's advanced Gemini AI for high-quality summaries
 - Designed to work within the free tier limits of the Gemini API (up to 1500 summaries per day)
@@ -19,9 +19,9 @@ Key features:
 
 1. When a new post with a link is submitted to your subreddit, the app can automatically generate a summary (if enabled).
 2. Moderators can also manually trigger summaries for specific posts.
-3. The app fetches the content from an archived copy of the linked URL, ensuring a snapshot is preserved even if the original content changes or becomes paywalled.
+3. The app fetches the content from the linked URL via 12ft.io.
 4. Using Google's Gemini AI, it generates a concise, informative summary.
-5. The summary, and optional archive.is link, is posted as a stickied comment on the original post, making it easily visible to all users.
+5. The summary, and optional script-free 12ft.io link, is posted as a stickied comment on the original post, making it easily visible to all users.
 
 ## Setup
 
