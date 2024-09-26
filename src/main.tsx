@@ -6,7 +6,7 @@ import { processQueue } from './utils/queueProcessor.js';
 import { fetchArticleContent, getUniqueToken } from './utils/scrapeUtils.js';
 import { validateApiKey, checkAndUpdateApiKey } from './utils/apiUtils.js';
 import { CONSTANTS } from './config/constants.js';
-//import { sha256 } from './utils/hashUtils.js';
+import { ScheduledJob, ScheduledCronJob, JSONObject } from '@devvit/public-api';
 
 type PartialContext = Partial<Context>;
 
@@ -88,36 +88,68 @@ async function isReadyToProcess(context: PartialContext): Promise<boolean> {
   return Boolean(automaticMode && apiKey && typeof apiKey === 'string' && apiKey.trim() !== '');
 }
 
-async function scheduleJob(context: PartialContext, name: string, cron: string, redisKey: string): Promise<void> {
-  console.info(`Scheduling ${name} job...`);
-  const existingJobId = await context.redis?.get(redisKey);
-  
-  if (existingJobId) {
-    try {
-      await context.scheduler?.cancelJob(existingJobId);
-      console.debug(`Deleted existing ${name} job with ID: ${existingJobId}`);
-    } catch (error) {
-      console.error(`Error deleting existing ${name} job:`, error);
-    }
-  }
-
-  const jobId = await context.scheduler?.runJob({ cron, name, data: {} });
-  if (jobId) {
-    console.debug(`${name} job scheduled with ID: ${jobId}`);
-    await context.redis?.set(redisKey, jobId);
-  }
-}
-
-async function scheduleAllJobs(context: PartialContext) {
+async function updateOrCreateJobs(context: PartialContext): Promise<Set<string>> {
+  console.info('Updating or creating jobs...');
   const jobsToSchedule = [
     { name: 'reset_daily_requests', cron: CONSTANTS.CRON_DAILY_MIDNIGHT, redisKey: 'resetDailyRequestsJobId' },
     { name: 'cleanup_queue', cron: CONSTANTS.CRON_HOURLY, redisKey: 'cleanupQueueJobId' },
     { name: 'process_queue', cron: CONSTANTS.CRON_EVERY_30_SECONDS, redisKey: 'processQueueJobId' }
   ];
 
+  const updatedJobIds = new Set<string>();
+
   for (const job of jobsToSchedule) {
-    await scheduleJob(context, job.name, job.cron, job.redisKey);
+    const existingJobId = await context.redis?.get(job.redisKey);
+    let jobId: string | undefined;
+
+    if (existingJobId) {
+      // Cancel existing job and create a new one
+      try {
+        await context.scheduler?.cancelJob(existingJobId);
+        console.debug(`Cancelled existing job ${job.name} with ID: ${existingJobId}`);
+      } catch (error) {
+        console.error(`Error cancelling job ${job.name}:`, error);
+      }
+    }
+
+    // Create new job
+    try {
+      jobId = await context.scheduler?.runJob({ cron: job.cron, name: job.name, data: {} });
+      console.debug(`Created new job ${job.name} with ID: ${jobId}`);
+    } catch (error) {
+      console.error(`Error creating job ${job.name}:`, error);
+    }
+
+    if (jobId) {
+      await context.redis?.set(job.redisKey, jobId);
+      updatedJobIds.add(jobId);
+    }
   }
+
+  return updatedJobIds;
+}
+
+async function cleanupUnusedJobs(context: PartialContext, updatedJobIds: Set<string>) {
+  console.info('Cleaning up unused jobs...');
+  const allJobs = await context.scheduler?.listJobs();
+  
+  if (allJobs) {
+    for (const job of allJobs) {
+      if (!updatedJobIds.has(job.id)) {
+        try {
+          await context.scheduler?.cancelJob(job.id);
+          console.debug(`Deleted unused job with ID: ${job.id}`);
+        } catch (error) {
+          console.error(`Error deleting unused job:`, error);
+        }
+      }
+    }
+  }
+}
+
+async function resetAndScheduleJobs(context: PartialContext) {
+  const updatedJobIds = await updateOrCreateJobs(context);
+  await cleanupUnusedJobs(context, updatedJobIds);
 }
 
 async function handleApiKeyChange(context: PartialContext) {
@@ -138,8 +170,8 @@ Devvit.addTrigger({
   event: 'AppInstall',
   onEvent: async (event, context: PartialContext) => {
     await tokenBucketInstance.checkAndUpdateLimits(context);
-    await scheduleAllJobs(context);
-    console.info('Jobs scheduled. Automatic summarization will start when conditions are met.');
+    await resetAndScheduleJobs(context);
+    console.info('Jobs reset and rescheduled. Automatic summarization will start when conditions are met.');
   },
 });
 
@@ -173,7 +205,7 @@ Devvit.addTrigger({
       console.log(`Starting AppUpgrade process: ${upgradeId}`);
 
       await tokenBucketInstance.checkAndUpdateLimits(context);
-      await scheduleAllJobs(context);
+      await resetAndScheduleJobs(context);
 
       console.log(`Completed AppUpgrade process: ${upgradeId}`);
     } catch (e) {

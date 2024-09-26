@@ -8,32 +8,36 @@ import { checkAndUpdateApiKey } from './apiUtils.js';
 type PartialContext = Partial<Context>;
 
 export async function processQueue(context: PartialContext): Promise<void> {
-    console.info('Starting to process the queue...');
+    console.info('Starting to process the post queue.');
 
+    // Check if the daily request limit has been reached
     if (await isDailyLimitReached(context)) {
-        console.warn('Daily request limit reached. Pausing queue processing.');
+        console.warn('Daily request limit reached. Skipping queue processing.');
         return;
     }
 
-    await handleApiKeyUpdate(context);
-
+    // Fetch the API key
     const apiKey = await getApiKey(context);
     if (!apiKey) {
-        console.error('API key is not set. Pausing queue processing.');
+        console.error('API key is missing. Cannot process posts.');
         return;
     }
 
+    // Fetch post IDs from the queue
     const postIds = await fetchPostIds(context);
     if (!postIds || postIds.length === 0) {
-        console.warn('No posts found in the queue to process.');
+        console.info('No posts found in the queue to process.');
         return;
     }
 
-    let token;
+    let token: string;
     try {
         token = await getUniqueToken(context);
     } catch (error) {
         console.error('Failed to obtain archive.is token:', error);
+        // Optionally, you can choose to reschedule the queue processing here
+        // For example:
+        // await rescheduleQueueProcessing(context);
         return;
     }
 
@@ -41,13 +45,25 @@ export async function processQueue(context: PartialContext): Promise<void> {
     const automaticMode = settings.automaticMode;
     const includeArchiveLink = settings.includeArchiveLink;
 
-    for (const postId of postIds.slice(0, 10)) {
-        await processSinglePost(postId.member, context, token, apiKey, automaticMode, includeArchiveLink);
+    // Process up to 10 posts at a time to prevent overwhelming the system
+    for (const post of postIds.slice(0, 10)) {
+        await processSinglePost(
+            post.member,
+            context,
+            token,
+            apiKey,
+            automaticMode,
+            includeArchiveLink
+        );
     }
+
+    console.info('Finished processing the post queue.');
 }
 
 async function isDailyLimitReached(context: PartialContext): Promise<boolean> {
-    const requestsToday = parseInt(await context.redis?.get(TokenBucket.REQUESTS_TODAY_KEY) || '0');
+    const requestsToday = parseInt(
+        await context.redis?.get(TokenBucket.REQUESTS_TODAY_KEY) || '0'
+    );
     return requestsToday >= tokenBucketInstance.requestsPerDay;
 }
 
@@ -60,7 +76,7 @@ async function handleApiKeyUpdate(context: PartialContext): Promise<void> {
 }
 
 async function getApiKey(context: PartialContext): Promise<string | null> {
-    const apiKey = await context.settings?.get('api_key') as string;
+    const apiKey = (await context.settings?.get('api_key')) as string;
     if (!apiKey) {
         return null;
     }
@@ -70,16 +86,16 @@ async function getApiKey(context: PartialContext): Promise<string | null> {
 async function fetchPostIds(context: PartialContext): Promise<{ member: string }[] | null> {
     const now = Date.now();
     const postIds = await context.redis?.zRange('post_queue', 0, now, { by: 'score' });
-    console.debug(`Fetched post IDs from queue: ${postIds}`);
-    
+    console.debug(`Fetched post IDs from queue: ${JSON.stringify(postIds)}`);
+
     if (!postIds) return null;
-    
+
     return postIds.map(({ member }) => ({ member }));
 }
 
 async function getSettings(context: PartialContext): Promise<{ automaticMode: boolean; includeArchiveLink: boolean }> {
-    const automaticMode = await context.settings?.get('automatic_mode') as boolean;
-    const includeArchiveLink = await context.settings?.get('include_archive_link') as boolean;
+    const automaticMode = (await context.settings?.get('automatic_mode')) as boolean;
+    const includeArchiveLink = (await context.settings?.get('include_archive_link')) as boolean;
     return { automaticMode, includeArchiveLink };
 }
 
@@ -105,7 +121,7 @@ async function processSinglePost(
 
         const currentRetryCount = await getCurrentRetryCount(context, postId);
 
-        let title, content, isArchived, archiveUrl;
+        let title: string, content: string, isArchived: boolean, archiveUrl: string | null;
         try {
             ({ title, content, isArchived, archiveUrl } = await fetchArticleContent(url, token, context));
         } catch (fetchError) {
@@ -154,7 +170,7 @@ async function handleArchiving(
     currentRetryCount: number
 ): Promise<void> {
     try {
-        await submitToArchive(url, token);
+        await submitToArchive(url, token, context);
     } catch (archiveError) {
         console.error(`Error submitting to archive for post ID ${postId}:`, archiveError);
         await retryPost(context, postId, currentRetryCount);
