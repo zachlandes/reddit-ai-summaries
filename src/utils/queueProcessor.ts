@@ -3,23 +3,28 @@ import { fetchArticleContent } from './scrapeUtils.js';
 import { summarizeContent } from './summaryUtils.js';
 import { CONSTANTS } from '../config/constants.js';
 import { tokenBucketInstance, TokenBucket } from './tokenBucket.js';
-import { checkAndUpdateApiKey } from './apiUtils.js';
+import { checkAndUpdateApiKey, validateApiKey, invalidateApiKeyValidation } from './apiUtils.js';
 
 type PartialContext = Partial<Context>;
 
 export async function processQueue(context: PartialContext): Promise<void> {
     console.info('Starting to process the post queue.');
 
-    // Check if the daily request limit has been reached
-    if (await isDailyLimitReached(context)) {
-        console.warn('Daily request limit reached. Skipping queue processing.');
-        return;
-    }
-
-    // Fetch the API key
     const apiKey = await getApiKey(context);
     if (!apiKey) {
         console.error('API key is missing. Cannot process posts.');
+        return;
+    }
+
+    const isValid = await validateApiKey(apiKey, context);
+    if (!isValid) {
+        console.error('Invalid API key. Abandoning queue processing.');
+        throw new Error('InvalidApiKey');
+    }
+
+    // Check if the daily request limit has been reached
+    if (await isDailyLimitReached(context)) {
+        console.warn('Daily request limit reached. Skipping queue processing.');
         return;
     }
 
@@ -29,8 +34,6 @@ export async function processQueue(context: PartialContext): Promise<void> {
         console.info('No posts found in the queue to process.');
         return;
     }
-
-
 
     const settings = await getSettings(context);
     const includeScriptlessLink = settings.includeScriptlessLink;
@@ -58,8 +61,9 @@ async function isDailyLimitReached(context: PartialContext): Promise<boolean> {
 async function handleApiKeyUpdate(context: PartialContext): Promise<void> {
     const apiKeyChanged = await checkAndUpdateApiKey(context);
     if (apiKeyChanged) {
-        console.info('API key changed. Resetting token bucket.');
+        console.info('API key changed. Resetting token bucket and clearing authentication error flag.');
         await tokenBucketInstance.resetBucket(context);
+        await context.redis?.del('gemini_auth_error');
     }
 }
 
@@ -185,7 +189,12 @@ async function handleSummaryError(
     postId: string, 
     error: any
 ): Promise<void> {
-    if (isResolvableError(error)) {
+    if (error?.message === 'GeminiAuthenticationError') {
+        console.error('CRITICAL: Gemini API authentication failed. Please check your API key and permissions immediately.');
+        await invalidateApiKeyValidation(context);
+        await context.redis?.set('gemini_auth_error', 'true');
+        throw new Error('GeminiAuthenticationError: Stopping queue processing');
+    } else if (isResolvableError(error)) {
         await retryPost(context, postId, await getCurrentRetryCount(context, postId));
     } else if (error?.message === 'DailyRequestLimitReached') {
         console.warn('Daily request limit reached during processing. Stopping further processing.');
@@ -212,5 +221,7 @@ async function handleGeneralError(
 
 function isResolvableError(error: any): boolean {
     const resolvableErrors = ['TimeoutError', 'ServiceUnavailable', 'RateLimitError'];
-    return resolvableErrors.includes(error.name) || (error.message && error.message.toLowerCase().includes('rate limit'));
+    return resolvableErrors.includes(error.name) || 
+           (error.message && error.message.toLowerCase().includes('rate limit')) &&
+           error.message !== 'GeminiAuthenticationError';
 }

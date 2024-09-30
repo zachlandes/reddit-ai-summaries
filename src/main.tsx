@@ -32,7 +32,7 @@ Devvit.addSettings([
         return 'API Key is required when Automatic Summarization is enabled.';
       }
       if (event.value && event.value.trim() !== '') {
-        const isValid = await validateApiKey(event.value.trim());
+        const isValid = await validateApiKey(event.value.trim(), context);
         if (!isValid) {
           return 'Invalid API Key. Please check and try again.';
         }
@@ -84,7 +84,19 @@ Devvit.addSettings([
 async function isReadyToProcess(context: PartialContext): Promise<boolean> {
   const automaticMode = await context.settings?.get('automatic_mode');
   const apiKey = await context.settings?.get('api_key');
-  return Boolean(automaticMode && apiKey && typeof apiKey === 'string' && apiKey.trim() !== '');
+  const isReady = Boolean(automaticMode && apiKey && typeof apiKey === 'string' && apiKey.trim() !== '');
+  
+  console.debug(`Ready to process: ${isReady}`);
+  console.debug(`Automatic mode: ${automaticMode}`);
+  
+  if (typeof apiKey === 'string' && apiKey.trim() !== '') {
+    const lastFourChars = apiKey.slice(-4);
+    console.debug(`API key status: Valid (last 4 characters: ${lastFourChars})`);
+  } else {
+    console.debug('API key status: Invalid or missing');
+  }
+  
+  return isReady;
 }
 
 async function updateOrCreateJobs(context: PartialContext): Promise<Set<string>> {
@@ -246,7 +258,7 @@ const aiSummaryForm = Devvit.createForm(
       }
 
       // Validate the manually provided API key
-      const isValidApiKey = await validateApiKey(apiKey);
+      const isValidApiKey = await validateApiKey(apiKey, context);
       if (!isValidApiKey) {
         context.ui.showToast('Invalid API Key. Please check and try again.');
         throw new Error('Invalid API Key. Please check and try again.');

@@ -1,7 +1,6 @@
 export const CONSTANTS = {
   GEMINI_API_TEST_ENDPOINT: 'https://generativelanguage.googleapis.com/v1/models',
   TWELVE_FT_URL: 'https://12ft.io/',
-  TOKEN_VALIDITY_DURATION: 60 * 60 * 1000, // 1 hour in milliseconds
   RETRY_INTERVAL: 300000, // 5 minutes in milliseconds
   MAX_RETRIES: 2,
   CRON_DAILY_MIDNIGHT: '0 0 * * *',
@@ -13,4 +12,6 @@ export const CONSTANTS = {
   REQUEST_SLOT_TIMEOUT: 60000, // 1 minute in milliseconds
   TOKEN_WAIT_TIMEOUT: 60000, // 1 minute in milliseconds
   RETRY_DELAY: 60000, // 1 minute in milliseconds
+  API_KEY_VALIDATION_KEY: 'api_key_validation',
+  API_KEY_VALIDATION_TTL: 1800, // 30 minutes in seconds
 };

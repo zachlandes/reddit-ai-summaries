@@ -111,8 +111,13 @@ Text: """${content}"""`;
     console.debug('Received summary from Gemini API.');
     return summary + '\n\n*I am an AI-powered bot and this summary was created automatically. Questions or concerns? Contact us. Want AI summaries for your own sub? Get them here*'; //TODO: add links
   } catch (error) {
-    console.error('Gemini summary generation failed:', error);
-    throw error; // Propagate the error to be handled in processQueue
+    if (error instanceof Error && error.message.includes('PERMISSION_DENIED')) {
+      console.error('Gemini API authentication failed. Please check your API key and permissions:', error);
+      throw new Error('GeminiAuthenticationError');
+    } else {
+      console.error('Gemini summary generation failed:', error);
+      throw error; // Propagate the error to be handled in processQueue
+    }
   }
 }
 
