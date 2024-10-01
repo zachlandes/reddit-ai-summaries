@@ -39,20 +39,37 @@ export async function fetchArticleContent(
         const $ = cheerio.load(html);
         console.debug('Loaded HTML into Cheerio.');
 
-        const title = $('title').text() || 'No title found';
+        // Try to extract title from meta tags first
+        let title = $('meta[property="og:title"]').attr('content') || 
+                    $('meta[name="twitter:title"]').attr('content') ||
+                    $('title').text() || 
+                    'No title found';
         console.debug(`Extracted title: ${title}`);
 
+        // Try to extract content using various selectors
         let content = '';
-        if ($('article').length) {
-            content = $('article').text();
-            console.debug('Extracted content from <article> tag.');
-        } else {
+        const contentSelectors = ['article', '.article-content', '.post-content', 'main', '.main-content'];
+        for (const selector of contentSelectors) {
+            content = $(selector).text();
+            if (content) {
+                console.debug(`Extracted content from ${selector} selector.`);
+                break;
+            }
+        }
+
+        // Fallback to body if no content found
+        if (!content) {
             content = $('body').text();
             console.debug('Extracted content from <body> tag as fallback.');
         }
 
         content = content.replace(/\s+/g, ' ').trim();
         console.debug('Cleaned up the extracted content.');
+
+        // Check if content is empty or very short
+        if (!content || content.length < 100) {
+            console.warn('Extracted content is empty or very short. Possible paywall or JavaScript-dependent content.');
+        }
 
         return {
             title,

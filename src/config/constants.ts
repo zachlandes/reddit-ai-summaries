@@ -1,6 +1,5 @@
 export const CONSTANTS = {
   GEMINI_API_TEST_ENDPOINT: 'https://generativelanguage.googleapis.com/v1/models',
-  TWELVE_FT_URL: 'https://12ft.io/',
   RETRY_INTERVAL: 300000, // 5 minutes in milliseconds
   MAX_RETRIES: 2,
   CRON_DAILY_MIDNIGHT: '0 0 * * *',

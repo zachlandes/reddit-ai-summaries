@@ -76,7 +76,7 @@ Devvit.addSettings([
   {
     type: 'boolean',
     name: 'include_scriptless_link',
-    label: 'Include 12ft.io Scriptless Link in Summary:',
+    label: 'Include script bypass link in summary:',
     defaultValue: true,
   },
   {
