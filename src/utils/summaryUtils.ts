@@ -52,7 +52,8 @@ export async function summarizeContent(
   }
 
   try {
-    const summary = await generateSummaryWithGemini(url, title, content, apiKey, temperature);
+    //const summary = await generateSummaryWithGemini(url, title, content, apiKey, temperature);
+    const summary = await generateSummaryWithFetch(url, title, content, apiKey, temperature);
     
     // Release unused tokens
     const actualOutputTokens = TokenBucket.estimateTokens(summary);
@@ -120,4 +121,73 @@ Text: """${content}"""`;
     }
   }
 }
+
+// New function to generate summary using fetch
+async function generateSummaryWithFetch(
+  url: string,
+  title: string,
+  content: string,
+  apiKey: string,
+  temperature: number
+): Promise<string> {
+  console.debug('Calling Gemini API for summary generation using fetch...');
+  try {
+    const systemPrompt = CONSTANTS.SUMMARY_SYSTEM_PROMPT;
+    const summarizingPrompt = `Summarize the following web content from ${url}:
+Title: """${title}"""
+Text: """${content}"""`;
+
+    const prompt = `${systemPrompt}\n\n${summarizingPrompt}`;
+    console.debug(`Prompt for Gemini (fetch): ${prompt}`);
+
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        contents: [
+          {
+            parts: [
+              { text: prompt }
+            ]
+          }
+        ],
+        generationConfig: {
+          temperature: temperature,
+        },
+      }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      console.error('Gemini API error:', errorData);
+      throw new Error(`HTTP error! status: ${response.status}, message: ${errorData.error?.message || 'Unknown error'}`);
+    }
+
+    const result = await response.json();
+    const summary = result.candidates[0].content.parts[0].text;
+
+    if (!summary) {
+      console.error('Gemini API returned an empty summary.');
+      throw new Error('Failed to generate summary');
+    }
+
+    console.debug('Received summary from Gemini API using fetch.');
+    return summary + '\n\n*I am an AI-powered bot and this summary was created automatically. Questions or concerns? Contact us. Want AI summaries for your own sub? Get them here*'; //TODO: add links
+  } catch (error) {
+    if (error instanceof Error) {
+      console.error('Gemini summary generation failed (fetch):', error.message);
+      if (error.message.includes('401')) {
+        throw new Error('GeminiAuthenticationError');
+      }
+    } else {
+      console.error('Gemini summary generation failed (fetch):', error);
+    }
+    throw error; // Propagate the error to be handled in processQueue
+  }
+}
+
+// TODO: Add a way to toggle between SDK and fetch methods
+// For now, you can manually switch between generateSummaryWithGemini and generateSummaryWithFetch in the summarizeContent function
 
