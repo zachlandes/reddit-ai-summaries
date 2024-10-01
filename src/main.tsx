@@ -79,6 +79,27 @@ Devvit.addSettings([
     label: 'Include 12ft.io Scriptless Link in Summary:',
     defaultValue: true,
   },
+  {
+    name: 'ladder_service_url',
+    label: 'Ladder Service URL',
+    type: 'string',
+    isSecret: true,
+    scope: 'app',
+  },
+  {
+    name: 'ladder_username',
+    label: 'Ladder Service Username',
+    type: 'string',
+    isSecret: true,
+    scope: 'app',
+  },
+  {
+    name: 'ladder_password',
+    label: 'Ladder Service Password',
+    type: 'string',
+    isSecret: true,
+    scope: 'app',
+  },
 ]);
 
 async function isReadyToProcess(context: PartialContext): Promise<boolean> {

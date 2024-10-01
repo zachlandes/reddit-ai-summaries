@@ -5,7 +5,7 @@ import { CONSTANTS } from '../config/constants.js';
 type PartialContext = Partial<Context>;
 
 /**
- * Fetches the content of the article from the given URL.
+ * Fetches the content of the article from the given URL using the Ladder service.
  * @param {string} url - The URL of the article to fetch.
  * @param {PartialContext} context - The application context.
  * @returns {Promise<{ title: string; content: string; scriptlessUrl: string | null }>}
@@ -16,15 +16,20 @@ export async function fetchArticleContent(
 ): Promise<{ title: string; content: string; scriptlessUrl: string | null }> {
     console.info(`Fetching article content from URL: ${url}`);
 
-    const twelveFtUrl = `${CONSTANTS.TWELVE_FT_URL}${encodeURIComponent(url)}`;
-    console.debug(`Using 12ft.io URL: ${twelveFtUrl}`);
+    const ladderServiceUrl = await context.settings?.get('ladder_service_url') ?? '';
+    const ladderUsername = await context.settings?.get('ladder_username') ?? '';
+    const ladderPassword = await context.settings?.get('ladder_password') ?? '';
+
+    const ladderUrl = `${ladderServiceUrl}/api/${encodeURIComponent(url)}`;
+    console.debug(`Using Ladder service URL: ${ladderUrl}`);
 
     try {
-        const response = await fetchWithRetry(twelveFtUrl, {
+        const response = await fetchWithRetry(ladderUrl, {
             headers: {
                 'User-Agent': 'Devvit AI Summaries App (https://developers.reddit.com/)',
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
                 'Accept-Language': 'en-US,en;q=0.5',
+                'Authorization': 'Basic ' + Buffer.from(`${ladderUsername}:${ladderPassword}`).toString('base64')
             }
         });
 
@@ -52,10 +57,10 @@ export async function fetchArticleContent(
         return {
             title,
             content,
-            scriptlessUrl: twelveFtUrl,
+            scriptlessUrl: ladderUrl,
         };
     } catch (error) {
-        console.error(`Error fetching article content from 12ft.io URL ${twelveFtUrl}:`, error);
+        console.error(`Error fetching article content from Ladder service URL ${ladderUrl}:`, error);
         throw error;
     }
 }
