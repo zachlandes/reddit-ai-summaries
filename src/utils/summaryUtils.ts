@@ -132,15 +132,15 @@ async function generateSummaryWithFetch(
 ): Promise<string> {
   console.debug('Calling Gemini API for summary generation using fetch...');
   try {
-    const systemPrompt = CONSTANTS.SUMMARY_SYSTEM_PROMPT;
-    const summarizingPrompt = `Summarize the following web content from ${url}:
-Title: """${title}"""
-Text: """${content}"""`;
+    const summarizingPrompt = CONSTANTS.SUMMARIZING_PROMPT
+      .replace('{url}', url)
+      .replace('{title}', title)
+      .replace('{content}', content);
 
-    const prompt = `${systemPrompt}\n\n${summarizingPrompt}`;
+    const prompt = `${CONSTANTS.SUMMARY_SYSTEM_PROMPT}\n\n${summarizingPrompt}`;
     console.debug(`Prompt for Gemini (fetch): ${prompt}`);
 
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
+    const response = await fetch(`${CONSTANTS.GEMINI_API_GENERATE_CONTENT_ENDPOINT}?key=${apiKey}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -174,7 +174,7 @@ Text: """${content}"""`;
     }
 
     console.debug('Received summary from Gemini API using fetch.');
-    return summary + '\n\n*I am an AI-powered bot and this summary was created automatically. Questions or concerns? Contact us. Want AI summaries for your own sub? Get them here*'; //TODO: add links
+    return summary + '\n\n' + CONSTANTS.BOT_FOOTER;
   } catch (error) {
     if (error instanceof Error) {
       console.error('Gemini summary generation failed (fetch):', error.message);

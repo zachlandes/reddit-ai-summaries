@@ -7,3 +7,4 @@ yarn-debug.log*
 yarn-error.log*
 reddit.code-workspace
 .DS_Store
+llm-context.txt

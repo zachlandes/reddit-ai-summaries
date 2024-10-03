@@ -25,14 +25,14 @@ Key features:
 
 ## Setup
 
-1. Install the AI Summaries app from the Reddit App Directory.
-2. Obtain a Google AI API key:
+1. Install the AI Summaries app from the [Reddit App Directory](https://developers.reddit.com/apps/ai-summaries) (click "Add to Community" at the top)
+2. Obtain a Google AI API key (free and no credit card required!):
    - Visit [Google AI Studio](https://ai.google.dev/)
    - Sign up or log in to your Google account
    - Navigate to the API section and create a new API key
    - Copy your API key for use in the next step
 3. In your subreddit's app settings, paste your Google AI API key.
-4. Configure other settings as desired (e.g., automatic summarization, rate limits).
+4. Configure other settings as desired. The default rate limits are configured to work within the free tier of the Gemini API.
 
 ## Usage
 
@@ -42,7 +42,7 @@ Once set up, the app will automatically summarize new posts containing links (if
 ### Manual Summarization
 1. As a user, navigate to any post in your subreddit.
 2. Look for the "Create an AI Summary" option in the post's menu.
-3. Click it to generate and post a summary.
+3. Click it, enter your gemini API key, and click "Create Summary" to generate and post a summary.
 
 ## Customization
 

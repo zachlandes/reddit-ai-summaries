@@ -25,7 +25,7 @@ Devvit.addSettings([
   {
     type: 'string',
     name: 'api_key',
-    label: 'Enter your Gemini API Key:',
+    label: 'Enter your Gemini API Key (get one athttps://aistudio.google.com/app/apikey):',
     onValidate: async (event: SettingsFormFieldValidatorEvent<string>, context: Devvit.Context) => {
       const automaticMode = await context.settings.get('automatic_mode');
       if (automaticMode && (!event.value || event.value.trim() === '')) {
