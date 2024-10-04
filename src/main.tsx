@@ -6,6 +6,7 @@ import { processQueue } from './utils/queueProcessor.js';
 import { fetchArticleContent } from './utils/scrapeUtils.js';
 import { validateApiKey } from './utils/apiUtils.js';
 import { CONSTANTS } from './config/constants.js';
+import { SummarySettingsHub } from './components/SummarySettingsHub.js';
 
 type PartialContext = Partial<Context>;
 
@@ -25,7 +26,7 @@ Devvit.addSettings([
   {
     type: 'string',
     name: 'api_key',
-    label: 'Enter your Gemini API Key (get one athttps://aistudio.google.com/app/apikey):',
+    label: 'Enter your Gemini API Key (get one at https://aistudio.google.com/app/apikey):',
     onValidate: async (event: SettingsFormFieldValidatorEvent<string>, context: Devvit.Context) => {
       const automaticMode = await context.settings.get('automatic_mode');
       if (automaticMode && (!event.value || event.value.trim() === '')) {
@@ -201,9 +202,16 @@ async function handleApiKeyChange(context: PartialContext) {
 Devvit.addTrigger({
   event: 'AppInstall',
   onEvent: async (event, context: PartialContext) => {
-    await tokenBucketInstance.checkAndUpdateLimits(context);
-    await resetAndScheduleJobs(context);
-    console.info('Jobs reset and rescheduled. Automatic summarization will start when conditions are met.');
+    try {
+      await tokenBucketInstance.checkAndUpdateLimits(context);
+      await resetAndScheduleJobs(context);
+      console.info('Jobs reset and rescheduled. Automatic summarization will start when conditions are met.');
+
+      // Always create a new dashboard post on app install
+      await createNewDashboardPost(context);
+    } catch (error) {
+      console.error('Error during AppInstall:', error);
+    }
   },
 });
 
@@ -238,6 +246,9 @@ Devvit.addTrigger({
 
       await tokenBucketInstance.checkAndUpdateLimits(context);
       await resetAndScheduleJobs(context);
+
+      // Check for existing AI Summaries dashboard and create if not found
+      await getOrCreateDashboardPost(context);
 
       console.log(`Completed AppUpgrade process: ${upgradeId}`);
     } catch (e) {
@@ -367,5 +378,71 @@ Devvit.addTrigger({
     await context.redis?.zAdd('post_queue', { member: postId, score: timestamp });
   },
 });
+
+Devvit.addCustomPostType({
+  name: 'AI Summaries Dashboard',
+  description: 'A dashboard for managing AI summaries app settings and testing summarization prompts',
+  render: SummarySettingsHub,
+});
+
+Devvit.addMenuItem({
+  label: 'Go to AI Summaries Dashboard',
+  location: 'subreddit',
+  forUserType: 'moderator',
+  onPress: async (event, context) => {
+    try {
+      const dashboardPostId = await getOrCreateDashboardPost(context);
+      const currentSubreddit = await context.reddit.getCurrentSubreddit();
+      const dashboardUrl = `https://www.reddit.com/r/${currentSubreddit.name}/comments/${dashboardPostId}`;
+      
+      // Navigate to the dashboard URL
+      await context.ui.navigateTo(dashboardUrl);
+    } catch (error) {
+      console.error('Error navigating to AI Summaries Dashboard:', error);
+      context.ui.showToast('Failed to navigate to AI Summaries Dashboard. Please try again.');
+    }
+  },
+});
+
+async function getOrCreateDashboardPost(context: PartialContext): Promise<string> {
+  const existingDashboardId = await context.redis?.get('ai_summaries_app_dashboard_post_id');
+
+  if (existingDashboardId) {
+    const existingPost = await context.reddit?.getPostById(existingDashboardId);
+    if (existingPost) {
+      return existingDashboardId;
+    }
+  }
+
+  // If we reach here, we need to create a new dashboard post
+  return createNewDashboardPost(context);
+}
+
+async function createNewDashboardPost(context: PartialContext): Promise<string> {
+  const currentSubreddit = await context.reddit?.getCurrentSubreddit();
+  if (!currentSubreddit) {
+    throw new Error('Failed to get current subreddit');
+  }
+
+  const post = await context.reddit?.submitPost({
+    title: 'AI Summaries App Dashboard',
+    subredditName: currentSubreddit.name,
+    preview: (
+      <vstack>
+        <text>Loading AI Summaries App Dashboard...</text>
+      </vstack>
+    ),
+  });
+  
+  if (!post) {
+    throw new Error('Failed to create AI Summaries App Dashboard post');
+  }
+
+  // Store the new post ID in Redis
+  await context.redis?.set('ai_summaries_app_dashboard_post_id', post.id);
+  
+  console.log(`Created new AI Summaries App Dashboard post with ID: ${post.id}`);
+  return post.id;
+}
 
 export default Devvit;

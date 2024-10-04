@@ -16,8 +16,11 @@ export async function summarizeContent(
 ): Promise<string> {
   console.info('Starting summary generation...');
   
+  // Retrieve the system prompt from Redis or use the default
+  const systemPrompt = await context.redis?.get('system_prompt') || CONSTANTS.SUMMARY_SYSTEM_PROMPT;
+  
   // Estimate input tokens
-  const inputTokens = TokenBucket.estimateTokens(CONSTANTS.SUMMARY_SYSTEM_PROMPT + title + content);
+  const inputTokens = TokenBucket.estimateTokens(systemPrompt + title + content);
   
   // Estimate potential output tokens (let's assume a maximum summary length)
   const maxSummaryTokens = TokenBucket.estimateMaxTokens(CONSTANTS.MAX_SUMMARY_LENGTH);
@@ -74,7 +77,7 @@ export async function summarizeContent(
   }
 }
 
-async function generateSummaryWithGemini(
+async function generateSummaryWithGeminiSDK(
   url: string,
   title: string,
   content: string,
