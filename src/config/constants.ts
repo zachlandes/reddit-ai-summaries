@@ -2,7 +2,7 @@ export const CONSTANTS = {
   GEMINI_API_TEST_ENDPOINT: 'https://generativelanguage.googleapis.com/v1/models',
   GEMINI_API_GENERATE_CONTENT_ENDPOINT: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent',
   RETRY_INTERVAL: 300000, // 5 minutes in milliseconds
-  MAX_RETRIES: 2,
+  MAX_RETRIES: 1,
   CRON_DAILY_MIDNIGHT: '0 0 * * *',
   CRON_HOURLY: '0 * * * *',
   CRON_EVERY_30_SECONDS: '*/30 * * * * *',

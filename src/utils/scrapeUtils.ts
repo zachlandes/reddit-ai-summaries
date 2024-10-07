@@ -1,6 +1,7 @@
 import * as cheerio from 'cheerio';
 import { Context } from '@devvit/public-api';
 import { CONSTANTS } from '../config/constants.js';
+import { isValidHttpUrl, ensureHttps } from './urlUtils.js';
 
 type PartialContext = Partial<Context>;
 
@@ -19,18 +20,37 @@ export async function fetchArticleContent(
     const ladderServiceUrl = await context.settings?.get('ladder_service_url') ?? '';
     const ladderUsername = await context.settings?.get('ladder_username') ?? '';
     const ladderPassword = await context.settings?.get('ladder_password') ?? '';
+    
+    if (!ladderServiceUrl || !ladderUsername || !ladderPassword) {
+        throw new Error('Ladder service credentials are not properly configured');
+    }
 
-    const ladderUrl = `${ladderServiceUrl}/api/${encodeURIComponent(url)}`;
+    // Ensure the URL is valid and has https://
+    if (!isValidHttpUrl(url)) {
+        throw new Error('Invalid URL provided');
+    }
+    url = ensureHttps(url);
+
+    // Decode the URL if it's already encoded, then encode it properly
+    const decodedUrl = decodeURIComponent(url);
+    const encodedUrl = encodeURIComponent(decodedUrl);
+
+    const ladderUrl = `${ladderServiceUrl}/api/${encodedUrl}`;
     console.debug(`Using Ladder service URL: ${ladderUrl}`);
 
     try {
+        const headers = new Headers({
+            'User-Agent': 'Devvit AI Summaries App (https://developers.reddit.com/)',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Authorization': 'Basic ' + Buffer.from(`${ladderUsername}:${ladderPassword}`).toString('base64')
+        });
+
+        console.debug(`Authorization header: ${headers.get('Authorization')}`);
+
         const response = await fetchWithRetry(ladderUrl, {
-            headers: {
-                'User-Agent': 'Devvit AI Summaries App (https://developers.reddit.com/)',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.5',
-                'Authorization': 'Basic ' + Buffer.from(`${ladderUsername}:${ladderPassword}`).toString('base64')
-            }
+            method: 'GET',
+            headers: headers
         });
 
         const html = await response.text();
@@ -39,7 +59,7 @@ export async function fetchArticleContent(
         const $ = cheerio.load(html);
         console.debug('Loaded HTML into Cheerio.');
 
-        // Try to extract title from meta tags first
+        // Extract title and content as before
         let title = $('meta[property="og:title"]').attr('content') || 
                     $('meta[name="twitter:title"]').attr('content') ||
                     $('title').text() || 
